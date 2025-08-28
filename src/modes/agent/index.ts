@@ -135,7 +135,12 @@ export const agentMode: Mode = {
     };
   },
 
-  generatePrompt(context: PreparedContext): string {
+  generatePrompt(
+    context: PreparedContext,
+    _githubData?: any,
+    _useCommitSigning?: boolean,
+    _allowPrReviews?: boolean,
+  ): string {
     // Agent mode uses prompt field
     if (context.prompt) {
       return context.prompt;

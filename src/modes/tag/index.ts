@@ -176,8 +176,9 @@ export const tagMode: Mode = {
     context: PreparedContext,
     githubData: FetchDataResult,
     useCommitSigning: boolean,
+    allowPrReviews: boolean = false,
   ): string {
-    return generateDefaultPrompt(context, githubData, useCommitSigning);
+    return generateDefaultPrompt(context, githubData, useCommitSigning, allowPrReviews);
   },
 
   getSystemPrompt() {

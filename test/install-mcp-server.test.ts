@@ -35,6 +35,7 @@ describe("prepareMcpConfig", () => {
       ...defaultStickyCommentInputs,
       useCommitSigning: false,
       allowedBots: "",
+      allowPrReviews: false,
     },
   };
 

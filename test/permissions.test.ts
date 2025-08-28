@@ -71,6 +71,7 @@ describe("checkWritePermissions", () => {
       ...defaultStickyCommentInputs,
       useCommitSigning: false,
       allowedBots: "",
+      allowPrReviews: false,
     },
   });
 
