@@ -1,39 +1,68 @@
-import * as core from "@actions/core";
 import type { Mode, ModeOptions, ModeResult } from "../types";
-import { checkContainsTrigger } from "../../github/validation/trigger";
 import { checkHumanActor } from "../../github/validation/actor";
 import { createInitialComment } from "../../github/operations/comments/create-initial";
 import { setupBranch } from "../../github/operations/branch";
 import { configureGitAuth } from "../../github/operations/git-config";
 import { prepareMcpConfig } from "../../mcp/install-mcp-server";
 import { fetchGitHubData } from "../../github/data/fetcher";
-import { createPrompt, generateDefaultPrompt } from "../../create-prompt";
-import { isEntityContext } from "../../github/context";
+import { createPrompt } from "../../create-prompt";
+import { generatePrReviewPrompt } from "../../create-prompt/pr-review-prompt";
+import {
+  isEntityContext,
+  isPullRequestReviewRequestedEvent,
+} from "../../github/context";
 import type { PreparedContext } from "../../create-prompt/types";
 import type { FetchDataResult } from "../../github/data/fetcher";
 
 /**
- * Tag mode implementation.
+ * PR Review mode implementation.
  *
- * The traditional implementation mode that responds to @claude mentions,
- * issue assignments, or labels. Creates tracking comments showing progress
- * and has full implementation capabilities.
+ * This mode is specifically triggered when a review is requested on a pull request
+ * and the reviewer matches the configured reviewer_trigger. It provides specialized
+ * PR review functionality with optional custom prompt injection.
  */
-export const tagMode: Mode = {
-  name: "tag",
-  description: "Traditional implementation mode triggered by @claude mentions",
+export const prReviewMode: Mode = {
+  name: "pr_review",
+  description: "PR review mode triggered by review requests",
 
   shouldTrigger(context) {
-    // Tag mode only handles entity events
+    // Only handle entity events
     if (!isEntityContext(context)) {
       return false;
     }
-    return checkContainsTrigger(context);
+
+    // Only trigger on pull_request review_requested events
+    if (!isPullRequestReviewRequestedEvent(context)) {
+      return false;
+    }
+
+    // Check if reviewer_trigger is configured
+    const reviewerTrigger = context.inputs.reviewerTrigger;
+    if (!reviewerTrigger) {
+      return false;
+    }
+
+    // Check if the requested reviewer matches our trigger
+    const triggerUser = reviewerTrigger.replace(/^@/, "");
+    const requestedReviewerUsername =
+      (context.payload as any).requested_reviewer?.login || "";
+
+    if (!triggerUser || !requestedReviewerUsername) {
+      return false;
+    }
+
+    const shouldTrigger = requestedReviewerUsername === triggerUser;
+
+    if (shouldTrigger) {
+      console.log(`PR review requested from trigger user '${triggerUser}'`);
+    }
+
+    return shouldTrigger;
   },
 
   prepareContext(context, data) {
     return {
-      mode: "tag",
+      mode: "pr_review",
       githubContext: context,
       commentId: data?.commentId,
       baseBranch: data?.baseBranch,
@@ -58,9 +87,9 @@ export const tagMode: Mode = {
     octokit,
     githubToken,
   }: ModeOptions): Promise<ModeResult> {
-    // Tag mode only handles entity-based events
+    // PR review mode only handles entity-based events
     if (!isEntityContext(context)) {
-      throw new Error("Tag mode requires entity context");
+      throw new Error("PR review mode requires entity context");
     }
 
     // Check if actor is human
@@ -78,7 +107,7 @@ export const tagMode: Mode = {
       triggerUsername: context.actor,
     });
 
-    // Setup branch
+    // Setup branch - for PR reviews we typically work with the existing PR branch
     const branchInfo = await setupBranch(octokit, githubData, context);
 
     // Configure git authentication if not using commit signing
@@ -98,76 +127,23 @@ export const tagMode: Mode = {
       claudeBranch: branchInfo.claudeBranch,
     });
 
-    await createPrompt(tagMode, modeContext, githubData, context);
+    await createPrompt(this, modeContext, githubData, context);
 
-    // Get our GitHub MCP servers configuration
+    // Get our GitHub MCP servers config
     const ourMcpConfig = await prepareMcpConfig({
       githubToken,
       owner: context.repository.owner,
       repo: context.repository.repo,
-      branch: branchInfo.claudeBranch || branchInfo.currentBranch,
+      branch: branchInfo.currentBranch,
       baseBranch: branchInfo.baseBranch,
       claudeCommentId: commentId.toString(),
       allowedTools: [],
       context,
     });
 
-    // Don't output mcp_config separately anymore - include in claude_args
-
-    // Build claude_args for tag mode with required tools
-    // Tag mode REQUIRES these tools to function properly
-    const tagModeTools = [
-      "Edit",
-      "MultiEdit",
-      "Glob",
-      "Grep",
-      "LS",
-      "Read",
-      "Write",
-      "mcp__github_comment__update_claude_comment",
-    ];
-
-    // Add git commands when not using commit signing
-    if (!context.inputs.useCommitSigning) {
-      tagModeTools.push(
-        "Bash(git add:*)",
-        "Bash(git commit:*)",
-        "Bash(git push:*)",
-        "Bash(git status:*)",
-        "Bash(git diff:*)",
-        "Bash(git log:*)",
-        "Bash(git rm:*)",
-      );
-    } else {
-      // When using commit signing, use MCP file ops tools
-      tagModeTools.push(
-        "mcp__github_file_ops__commit_files",
-        "mcp__github_file_ops__delete_files",
-      );
-    }
-
-    const userClaudeArgs = process.env.CLAUDE_ARGS || "";
-
-    // Build complete claude_args with multiple --mcp-config flags
-    let claudeArgs = "";
-
-    // Add our GitHub servers config
-    const escapedOurConfig = ourMcpConfig.replace(/'/g, "'\\''");
-    claudeArgs = `--mcp-config '${escapedOurConfig}'`;
-
-    // Add required tools for tag mode
-    claudeArgs += ` --allowedTools "${tagModeTools.join(",")}"`;
-
-    // Append user's claude_args (which may have more --mcp-config flags)
-    if (userClaudeArgs) {
-      claudeArgs += ` ${userClaudeArgs}`;
-    }
-
-    core.setOutput("claude_args", claudeArgs.trim());
-
     return {
       commentId,
-      branchInfo,
+      branchInfo: branchInfo,
       mcpConfig: ourMcpConfig,
     };
   },
@@ -175,19 +151,20 @@ export const tagMode: Mode = {
   generatePrompt(
     context: PreparedContext,
     githubData: FetchDataResult,
-    useCommitSigning: boolean,
+    useCommitSigning: boolean = false,
     allowPrReviews: boolean = false,
   ): string {
-    return generateDefaultPrompt(
+    return generatePrReviewPrompt(
       context,
       githubData,
       useCommitSigning,
       allowPrReviews,
+      context.prompt, // Custom prompt injection
     );
   },
 
   getSystemPrompt() {
-    // Tag mode doesn't need additional system prompts
+    // PR review mode doesn't need additional system prompts
     return undefined;
   },
 };
