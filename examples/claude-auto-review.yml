@@ -37,4 +37,4 @@ jobs:
             Use inline comments to highlight specific areas of concern.
 
           claude_args: |
-            --allowedTools "mcp__github__create_pending_pull_request_review,mcp__github__add_comment_to_pending_review,mcp__github__submit_pending_pull_request_review,mcp__github__get_pull_request_diff"
+            --allowedTools "mcp__github_review__create_pending_review,mcp__github_review__add_review_comment,mcp__github_review__submit_pr_review"
