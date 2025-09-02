@@ -19,6 +19,8 @@ jobs:
 
       - name: Automatic PR Review
         uses: anthropics/claude-code-action@v1-dev
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
