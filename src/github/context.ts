@@ -6,6 +6,7 @@ import type {
   PullRequestEvent,
   PullRequestReviewEvent,
   PullRequestReviewCommentEvent,
+  PullRequestReviewRequestedEvent,
   WorkflowRunEvent,
 } from "@octokit/webhooks-types";
 import { CLAUDE_APP_BOT_ID, CLAUDE_BOT_LOGIN } from "./constants";
@@ -85,6 +86,7 @@ type BaseContext = {
     prompt: string;
     triggerPhrase: string;
     assigneeTrigger: string;
+    reviewerTrigger: string;
     labelTrigger: string;
     baseBranch?: string;
     branchPrefix: string;
@@ -93,6 +95,9 @@ type BaseContext = {
     botId: string;
     botName: string;
     allowedBots: string;
+    stickyCommentAppBotId: number;
+    stickyCommentAppBotName: string;
+    allowPrReviews: boolean;
     trackProgress: boolean;
   };
 };
@@ -139,6 +144,7 @@ export function parseGitHubContext(): GitHubContext {
       prompt: process.env.PROMPT || "",
       triggerPhrase: process.env.TRIGGER_PHRASE ?? "@claude",
       assigneeTrigger: process.env.ASSIGNEE_TRIGGER ?? "",
+      reviewerTrigger: process.env.REVIEWER_TRIGGER ?? "",
       labelTrigger: process.env.LABEL_TRIGGER ?? "",
       baseBranch: process.env.BASE_BRANCH,
       branchPrefix: process.env.BRANCH_PREFIX ?? "claude/",
@@ -148,6 +154,12 @@ export function parseGitHubContext(): GitHubContext {
       botName: process.env.BOT_NAME ?? CLAUDE_BOT_LOGIN,
       allowedBots: process.env.ALLOWED_BOTS ?? "",
       trackProgress: process.env.TRACK_PROGRESS === "true",
+      stickyCommentAppBotId: parseInt(
+        process.env.STICKY_COMMENT_APP_BOT_ID ?? "209825114",
+      ),
+      stickyCommentAppBotName:
+        process.env.STICKY_COMMENT_APP_BOT_NAME ?? "claude",
+      allowPrReviews: process.env.ALLOW_PR_REVIEWS === "true",
     },
   };
 
@@ -269,6 +281,16 @@ export function isIssuesAssignedEvent(
   context: GitHubContext,
 ): context is ParsedGitHubContext & { payload: IssuesAssignedEvent } {
   return isIssuesEvent(context) && context.eventAction === "assigned";
+}
+
+export function isPullRequestReviewRequestedEvent(
+  context: GitHubContext,
+): context is ParsedGitHubContext & {
+  payload: PullRequestReviewRequestedEvent;
+} {
+  return (
+    isPullRequestEvent(context) && context.eventAction === "review_requested"
+  );
 }
 
 // Type guard to check if context is an entity context (has entityNumber and isPR)
