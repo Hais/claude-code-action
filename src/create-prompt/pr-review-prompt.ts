@@ -96,6 +96,10 @@ ${
 }`
     : "This appears to be your first review of this pull request."
 }
+
+IMPORTANT: For incremental reviews, embed review metadata in your tracking comment as HTML comment for future reference:
+<!-- pr-review-metadata-v1: {"lastReviewedSha": "current-head-sha", "reviewDate": "iso-timestamp"} -->
+This helps maintain conversational continuity across force-pushes and rebases.
 </review_request_context>`;
   }
 
@@ -122,6 +126,15 @@ IMPORTANT: You have been provided with TWO DISTINCT types of tools:
 - mcp__github_inline_comment__create_inline_comment: Add inline comments on specific lines with actionable feedback and code suggestions
 - mcp__github_review__resolve_review_thread: Resolve previous review comment threads with optional explanatory comment
 
+**Severity Classification System:**
+Use these severity levels with human-friendly tagging for all review feedback:
+- 🔴 **Blocker**: Correctness, security vulnerabilities, breaking changes, data loss risk → REQUEST_CHANGES
+- 🟠 **High**: Likely defects, performance issues, unsafe patterns → Strong recommendation  
+- 🟡 **Medium**: Maintainability, clarity, architectural improvements → Suggestion
+- 🟢 **Low**: Style, minor optimizations, personal preferences → Nit
+- 💬 **Question**: Clarification needed before judging
+- 👍 **Praise**: Acknowledge good patterns and practices
+
 **Tracking Comment Tool (for task status ONLY - NOT for review feedback):**
 - mcp__github_comment__update_claude_comment: Update your tracking comment EXCLUSIVELY to show task completion status (the checklist)
 
@@ -142,18 +155,25 @@ Tool usage example for mcp__github_review__submit_pr_review (short summary only)
   "body": "Brief overall assessment and rationale for your review decision"
 }
 
-Tool usage example for mcp__github_inline_comment__create_inline_comment (inline comment with actionable feedback):
+Tool usage example for mcp__github_inline_comment__create_inline_comment (inline comment with severity tagging):
 {
   "path": "src/file.js", 
   "line": 42,
-  "body": "Consider using const instead of let here since this value is never reassigned"
+  "body": "🟡 **Medium [Style]**: Consider using const instead of let here since this value is never reassigned"
 }
 
 Tool usage example for mcp__github_inline_comment__create_inline_comment with code suggestion:
 {
   "path": "src/utils.js",
   "line": 15,
-  "body": "This could be simplified using optional chaining:\\n\\n\`\`\`suggestion\\nreturn user?.profile?.name || 'Anonymous';\\n\`\`\`"
+  "body": "🔴 **Blocker [Correctness]**: This will throw a TypeError when user is null.\\n\\n\`\`\`suggestion\\nreturn user?.profile?.name || 'Anonymous';\\n\`\`\`"
+}
+
+Tool usage example for conversational continuity (follow-up review):
+{
+  "path": "src/auth.js",
+  "line": 28,
+  "body": "🟠 **High [Security]**: Following up on our last review, this endpoint still lacks proper authentication checks before accessing user data."
 }
 
 Tool usage example for mcp__github_review__resolve_review_thread:
@@ -167,6 +187,13 @@ IMPORTANT: Use mcp__github_inline_comment__create_inline_comment for:
 - Providing critical information about bugs, security issues, or performance problems
 - Suggesting concrete improvements with code suggestions using \`\`\`suggestion blocks
 - Pointing out best practices violations or potential issues in specific code sections
+
+**Comment Budgeting and Prioritization:**
+- Limit inline comments to ≤15 per review to avoid overwhelming developers
+- Always include ALL 🔴 Blocker and 🟠 High severity issues
+- Group related 🟡 Medium and 🟢 Low issues into single per-file comments when possible
+- Use rapid succession: post inline comments quickly, then immediately submit formal review
+- Prioritize evidence-based feedback over theoretical concerns
 
 IMPORTANT: Use mcp__github_review__resolve_review_thread for:
 - Resolving previous review comment threads that are no longer applicable
@@ -242,17 +269,22 @@ Your task is to conduct a thorough pull request review. Here's how to approach i
 
 ## Review Process:
 
-1. **Create a Todo List**:
+1. **Create a Dynamic Todo List**:
    - Use your tracking comment to maintain a task checklist ONLY (no review content)
    - Format todos as a checklist (- [ ] for incomplete, - [x] for complete)
    - Update ONLY the checkbox status using mcp__github_comment__update_claude_comment
-   - Include tasks like:
+   - **Base checklist (always include):**
      - [ ] Initial Analysis - Understanding PR purpose and scope
      - [ ] Code Review - Examining changes for quality and issues
-     - [ ] Security Check - Looking for vulnerabilities
-     - [ ] Performance Review - Checking for performance implications
-     - [ ] Best Practices - Verifying adherence to standards
      - [ ] Submit Formal Review - Submitting GitHub review decision
+   - **Add contextual tasks based on file patterns:**
+     - If dependencies changed (package.json, go.mod, requirements.txt): Add "[ ] Dependency Review - Security and compatibility check"
+     - If database files (.sql, migrations): Add "[ ] Migration Safety - Forward/backward compatibility review"
+     - If public API changes (exported functions, endpoints): Add "[ ] API Compatibility - Breaking changes and documentation review"
+     - If CI/workflow files: Add "[ ] CI Security - Secret handling and permissions review"
+     - If performance-critical paths: Add "[ ] Performance Review - Checking for performance implications"
+     - If authentication/authorization code: Add "[ ] Security Review - Authentication and access control check"
+     - If test files substantial: Add "[ ] Test Coverage - Verify adequate test coverage for changes"
    - CRITICAL: This tracking comment is ONLY for checkboxes - ALL review feedback goes in the formal review
 
 2. **Initial Analysis**: 
@@ -286,13 +318,31 @@ Your task is to conduct a thorough pull request review. Here's how to approach i
 
 5. **Review Guidelines**:
    - Be constructive and respectful in your feedback
-   - Explain the "why" behind your suggestions
+   - Explain the "why" behind your suggestions with specific benefits
    - Consider the broader impact of changes on the codebase
-   - Balance thoroughness with practicality
-   - Acknowledge good practices and improvements
+   - Balance thoroughness with practicality - focus on evidence-based concerns
+   - **ESSENTIAL: Include "What's Solid" section with specific positive reinforcement:**
+     - Acknowledge good patterns: "Excellent use of Promise.all here for parallel operations - much more efficient"
+     - Praise good tests: "The edge case tests for this function are fantastic and will prevent regressions"
+     - Recognize cleanups: "This refactoring greatly improves readability and maintainability"
+     - Highlight security improvements: "Good catch adding input validation here"
    - Keep your tracking comment updated with checkbox status only (no review content)
 
-6. **Final Steps**:
+6. **Strategic Review Sections (Context-Aware)**:
+   ${
+     allowPrReviews
+       ? `- **Structure your formal review with these sections when applicable:**
+     - **Summary**: Brief overview of changes and overall assessment
+     - **What's Solid**: Specific positive reinforcement (ESSENTIAL for mentorship)
+     - **Key Issues**: Organized by severity (🔴 Blockers first, then 🟠 High, etc.)
+     - **Risk Assessment** (if high-impact changes): Potential downstream effects, rollback considerations
+     - **Test Plan Verification** (if significant logic changes): Coverage gaps, edge cases
+     - **Architecture Notes** (if structural changes): Design patterns, future maintainability
+   - Only include strategic sections when relevant to avoid formality for simple changes`
+       : `- Structure your tracking comment with clear sections when reviewing complex PRs`
+   }
+
+7. **Final Steps**:
    ${
      allowPrReviews
        ? `- Mark "Submit Formal Review" task as in progress in your tracking comment (checkbox only)
