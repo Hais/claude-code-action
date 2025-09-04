@@ -12,6 +12,9 @@ inputs:
   assignee_trigger:
     description: "The assignee username that triggers the action (e.g. @claude)"
     required: false
+  reviewer_trigger:
+    description: "The reviewer username that triggers the action when review is requested (e.g. @claude)"
+    required: false
   label_trigger:
     description: "The label that triggers the action (e.g. claude)"
     required: false
@@ -69,6 +72,14 @@ inputs:
     description: "Use just one comment to deliver issue/PR comments"
     required: false
     default: "false"
+  sticky_comment_app_bot_id:
+    description: "The ID of the app bot that will be used to create the sticky comment. Defaults to the Claude app bot ID."
+    required: false
+    default: "209825114"
+  sticky_comment_app_bot_name:
+    description: "The name of the app bot that will be used to create the sticky comment. Defaults to 'claude'."
+    required: false
+    default: "claude"
   use_commit_signing:
     description: "Enable commit signing using GitHub's commit signature verification. When false, Claude uses standard git commands"
     required: false
@@ -81,6 +92,18 @@ inputs:
     description: "Restrict network access to these domains only (newline-separated). If not set, no restrictions are applied. Provider domains are auto-detected."
     required: false
     default: ""
+  allow_pr_reviews:
+    description: "Enable Claude to submit formal PR reviews (APPROVE/REQUEST_CHANGES/COMMENT). SECURITY WARNING: This allows Claude to approve pull requests. Only enable if you understand the implications."
+    required: false
+    default: "false"
+  assistant_name:
+    description: "Name to use for the AI assistant in user-facing messages (e.g., comments, PR titles). Defaults to 'Claude'."
+    required: false
+    default: "Claude"
+  assistant_product_name:
+    description: "Product name to use for the AI assistant in user-facing messages (e.g., signatures, branding). Defaults to 'Claude Code'."
+    required: false
+    default: "Claude Code"
   path_to_claude_code_executable:
     description: "Optional path to a custom Claude Code executable. If provided, skips automatic installation and uses this executable instead. WARNING: Using an older version may cause problems if the action begins taking advantage of new Claude Code features. This input is typically not needed unless you're debugging something specific or have unique needs in your environment."
     required: false
@@ -135,6 +158,7 @@ runs:
         PROMPT: ${{ inputs.prompt }}
         TRIGGER_PHRASE: ${{ inputs.trigger_phrase }}
         ASSIGNEE_TRIGGER: ${{ inputs.assignee_trigger }}
+        REVIEWER_TRIGGER: ${{ inputs.reviewer_trigger }}
         LABEL_TRIGGER: ${{ inputs.label_trigger }}
         BASE_BRANCH: ${{ inputs.base_branch }}
         BRANCH_PREFIX: ${{ inputs.branch_prefix }}
@@ -142,11 +166,16 @@ runs:
         ALLOWED_BOTS: ${{ inputs.allowed_bots }}
         GITHUB_RUN_ID: ${{ github.run_id }}
         USE_STICKY_COMMENT: ${{ inputs.use_sticky_comment }}
+        STICKY_COMMENT_APP_BOT_ID: ${{ inputs.sticky_comment_app_bot_id }}
+        STICKY_COMMENT_APP_BOT_NAME: ${{ inputs.sticky_comment_app_bot_name }}
         DEFAULT_WORKFLOW_TOKEN: ${{ github.token }}
         USE_COMMIT_SIGNING: ${{ inputs.use_commit_signing }}
         TRACK_PROGRESS: ${{ inputs.track_progress }}
         ADDITIONAL_PERMISSIONS: ${{ inputs.additional_permissions }}
         CLAUDE_ARGS: ${{ inputs.claude_args }}
+        ALLOW_PR_REVIEWS: ${{ inputs.allow_pr_reviews }}
+        ASSISTANT_NAME: ${{ inputs.assistant_name }}
+        ASSISTANT_PRODUCT_NAME: ${{ inputs.assistant_product_name }}
         ALL_INPUTS: ${{ toJson(inputs) }}
 
     - name: Install Base Action Dependencies
@@ -196,6 +225,8 @@ runs:
         INPUT_CLAUDE_ARGS: ${{ steps.prepare.outputs.claude_args }}
         INPUT_EXPERIMENTAL_SLASH_COMMANDS_DIR: ${{ github.action_path }}/slash-commands
         INPUT_ACTION_INPUTS_PRESENT: ${{ steps.prepare.outputs.action_inputs_present }}
+        INPUT_ASSISTANT_NAME: ${{ inputs.assistant_name }}
+        INPUT_ASSISTANT_PRODUCT_NAME: ${{ inputs.assistant_product_name }}
         INPUT_PATH_TO_CLAUDE_CODE_EXECUTABLE: ${{ inputs.path_to_claude_code_executable }}
         INPUT_PATH_TO_BUN_EXECUTABLE: ${{ inputs.path_to_bun_executable }}
 
@@ -251,8 +282,12 @@ runs:
         PREPARE_SUCCESS: ${{ steps.prepare.outcome == 'success' }}
         PREPARE_ERROR: ${{ steps.prepare.outputs.prepare_error || '' }}
         USE_STICKY_COMMENT: ${{ inputs.use_sticky_comment }}
+        STICKY_COMMENT_APP_BOT_ID: ${{ inputs.sticky_comment_app_bot_id }}
+        STICKY_COMMENT_APP_BOT_NAME: ${{ inputs.sticky_comment_app_bot_name }}
         USE_COMMIT_SIGNING: ${{ inputs.use_commit_signing }}
         TRACK_PROGRESS: ${{ inputs.track_progress }}
+        ASSISTANT_NAME: ${{ inputs.assistant_name }}
+        ASSISTANT_PRODUCT_NAME: ${{ inputs.assistant_product_name }}
 
     - name: Display Claude Code Report
       if: steps.prepare.outputs.contains_trigger == 'true' && steps.claude-code.outputs.execution_file != ''
