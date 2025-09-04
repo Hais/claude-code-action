@@ -10,6 +10,11 @@ import {
 import { sanitizeContent } from "../github/utils/sanitizer";
 import { getSystemPromptPrefix } from "../utils/assistant-branding";
 import { findLastReviewFromUser, getCommitsSinceReview } from "./index";
+import {
+  getCommitsSinceSha,
+  getChangedFilesSinceSha,
+  shaExists,
+} from "../github/utils/commit-helpers";
 
 /**
  * Generates a specialized prompt for PR review mode that incorporates custom user prompts
@@ -28,6 +33,7 @@ export function generatePrReviewPrompt(
     changedFilesWithSHA,
     reviewData,
     imageUrlMap,
+    lastReviewMetadata,
   } = githubData;
   const { eventData } = context;
 
@@ -63,6 +69,54 @@ Images have been downloaded from GitHub comments and saved to disk. Their file p
     eventData.isPR
   ) {
     const requestedReviewer = (eventData as any).requestedReviewer;
+
+    // Try to get incremental review data from Claude's previous tracking comment metadata
+    let incrementalReviewInfo = "";
+    if (lastReviewMetadata?.metadata) {
+      const metadata = lastReviewMetadata.metadata;
+      const lastSha = metadata.lastReviewedSha;
+
+      // Check if the SHA still exists (handles force-pushes)
+      const shaStillExists = shaExists(lastSha);
+
+      if (shaStillExists) {
+        // Get commits and changed files since the last reviewed SHA
+        const commitsSinceSha = getCommitsSinceSha(lastSha);
+        const changedFilesSinceSha = getChangedFilesSinceSha(lastSha);
+
+        incrementalReviewInfo = `
+**Incremental Review Context (from tracking comment metadata):**
+- Last reviewed SHA: ${lastSha}
+- Last review date: ${new Date(metadata.reviewDate).toISOString()}
+- Commits since last review: ${commitsSinceSha.length}${
+          commitsSinceSha.length > 0
+            ? `\n${commitsSinceSha
+                .slice(0, 10)
+                .map((commit) => `  - ${commit.oid}: ${commit.message}`)
+                .join(
+                  "\n",
+                )}${commitsSinceSha.length > 10 ? `\n  ... and ${commitsSinceSha.length - 10} more commits` : ""}`
+            : ""
+        }
+- Files changed since last review: ${changedFilesSinceSha.length}${
+          changedFilesSinceSha.length > 0 && changedFilesSinceSha.length <= 15
+            ? `\n${changedFilesSinceSha.map((file) => `  - ${file}`).join("\n")}`
+            : changedFilesSinceSha.length > 15
+              ? `\n  ${changedFilesSinceSha
+                  .slice(0, 15)
+                  .map((file) => `- ${file}`)
+                  .join(
+                    ", ",
+                  )} and ${changedFilesSinceSha.length - 15} more files`
+              : ""
+        }`;
+      } else {
+        incrementalReviewInfo = `
+**Note:** Found previous review metadata (SHA: ${lastSha}, Date: ${new Date(metadata.reviewDate).toISOString()}), but the SHA no longer exists in this branch (likely due to force-push or rebase). Falling back to timestamp-based review context.`;
+      }
+    }
+
+    // Fallback to GitHub's native review API data if no metadata or SHA doesn't exist
     const lastReview = requestedReviewer
       ? findLastReviewFromUser(reviewData, requestedReviewer)
       : null;
@@ -74,12 +128,9 @@ Images have been downloaded from GitHub comments and saved to disk. Their file p
           )
         : [];
 
-    reviewRequestContext = `<review_request_context>
-You have been requested to review this pull request.
-${requestedReviewer ? `The reviewer trigger matched: ${requestedReviewer}` : ""}
-${
-  lastReview
-    ? `Your last review was submitted on ${new Date(lastReview.submittedAt).toISOString()} at ${new Date(lastReview.submittedAt).toLocaleTimeString()}.
+    const githubReviewInfo = lastReview
+      ? `**GitHub Review History:**
+Your last review was submitted on ${new Date(lastReview.submittedAt).toISOString()} at ${new Date(lastReview.submittedAt).toLocaleTimeString()}.
 Review ID: ${lastReview.id}
 ${
   commitsSinceReview.length > 0
@@ -94,8 +145,15 @@ ${
         )}${commitsSinceReview.length > 10 ? `\n... and ${commitsSinceReview.length - 10} more commits` : ""}`
     : "\nNo new commits since your last review."
 }`
-    : "This appears to be your first review of this pull request."
-}
+      : "This appears to be your first review of this pull request.";
+
+    reviewRequestContext = `<review_request_context>
+You have been requested to review this pull request.
+${requestedReviewer ? `The reviewer trigger matched: ${requestedReviewer}` : ""}
+
+${incrementalReviewInfo}
+
+${incrementalReviewInfo ? githubReviewInfo : githubReviewInfo}
 
 IMPORTANT: For incremental reviews, embed review metadata in your tracking comment as HTML comment for future reference:
 <!-- pr-review-metadata-v1: {"lastReviewedSha": "current-head-sha", "reviewDate": "iso-timestamp"} -->
@@ -269,48 +327,27 @@ Your task is to conduct a thorough pull request review. Here's how to approach i
 
 ## Review Process:
 
-1. **Create a Dynamic Todo List**:
-   - Use your tracking comment to maintain a task checklist ONLY (no review content)
-   - Format todos as a checklist (- [ ] for incomplete, - [x] for complete)
-   - Update ONLY the checkbox status using mcp__github_comment__update_claude_comment
-   - **Base checklist (always include):**
-     - [ ] Initial Analysis - Understanding PR purpose and scope
-     - [ ] Code Review - Examining changes for quality and issues
-     - [ ] Submit Formal Review - Submitting GitHub review decision
-   - **Add contextual tasks based on file patterns:**
-     - If dependencies changed (package.json, go.mod, requirements.txt): Add "[ ] Dependency Review - Security and compatibility check"
-     - If database files (.sql, migrations): Add "[ ] Migration Safety - Forward/backward compatibility review"
-     - If public API changes (exported functions, endpoints): Add "[ ] API Compatibility - Breaking changes and documentation review"
-     - If CI/workflow files: Add "[ ] CI Security - Secret handling and permissions review"
-     - If performance-critical paths: Add "[ ] Performance Review - Checking for performance implications"
-     - If authentication/authorization code: Add "[ ] Security Review - Authentication and access control check"
-     - If test files substantial: Add "[ ] Test Coverage - Verify adequate test coverage for changes"
-   - CRITICAL: This tracking comment is ONLY for checkboxes - ALL review feedback goes in the formal review
-
-2. **Initial Analysis**: 
+1. ${allowPrReviews ? "**Direct Review Flow**:\n   - Begin analysis immediately without tracking comment setup\n   - Use formal PR review tools for all feedback and status tracking\n   - GitHub's native review interface provides built-in progress tracking\n\n2. **Initial Analysis**:" : '**Create a Dynamic Todo List**:\n   - Use your tracking comment to maintain a task checklist ONLY (no review content)\n   - Format todos as a checklist (- [ ] for incomplete, - [x] for complete)\n   - Update ONLY the checkbox status using mcp__github_comment__update_claude_comment\n   - **Base checklist (always include):**\n     - [ ] Initial Analysis - Understanding PR purpose and scope\n     - [ ] Code Review - Examining changes for quality and issues\n     - [ ] Submit Formal Review - Submitting GitHub review decision\n   - **Add contextual tasks based on file patterns:**\n     - If dependencies changed (package.json, go.mod, requirements.txt): Add "[ ] Dependency Review - Security and compatibility check"\n     - If database files (.sql, migrations): Add "[ ] Migration Safety - Forward/backward compatibility review"\n     - If public API changes (exported functions, endpoints): Add "[ ] API Compatibility - Breaking changes and documentation review"\n     - If CI/workflow files: Add "[ ] CI Security - Secret handling and permissions review"\n     - If performance-critical paths: Add "[ ] Performance Review - Checking for performance implications"\n     - If authentication/authorization code: Add "[ ] Security Review - Authentication and access control check"\n     - If test files substantial: Add "[ ] Test Coverage - Verify adequate test coverage for changes"\n   - CRITICAL: This tracking comment is ONLY for checkboxes - ALL review feedback goes in the formal review\n\n2. **Initial Analysis**:'} 
    - Read the PR description and understand the purpose of the changes
    - Review the changed files to understand the scope of modifications
-   - Note any existing comments or previous review feedback
-   - Mark this task complete in your tracking comment: - [x] Initial Analysis
+   - Note any existing comments or previous review feedback${allowPrReviews ? "" : "\n   - Mark this task complete in your tracking comment: - [x] Initial Analysis"}
 
 3. **Code Review**:
    - Examine each changed file for code quality, logic, and potential issues
    - Look for bugs, security vulnerabilities, performance issues, or style problems
    - Check for proper error handling, edge cases, and test coverage
-   - Verify that the implementation matches the PR description
-   - Update your tracking comment as you complete each aspect
+   - Verify that the implementation matches the PR description${allowPrReviews ? "" : "\n   - Update your tracking comment as you complete each aspect"}
 
 4. **Provide Feedback**:
    ${
      allowPrReviews
        ? `- Use mcp__github_inline_comment__create_inline_comment for specific line-by-line feedback on the code
    - Use mcp__github_review__resolve_review_thread to resolve outdated conversations from previous reviews
-   - Update your tracking comment ONLY to mark tasks as complete (checkbox status only)
    - Use mcp__github_review__submit_pr_review to submit your formal GitHub review with:
      - APPROVE: If the changes look good with no significant issues
      - REQUEST_CHANGES: If there are important issues that need to be addressed  
      - COMMENT: For general feedback or questions without blocking approval
-   - Remember: ALL review feedback goes in the formal review, NOT in the tracking comment`
+   - All feedback and progress tracking handled through GitHub's native review system`
        : `- Update your tracking comment with review feedback using mcp__github_comment__update_claude_comment
    - Provide both positive feedback and constructive criticism
    - Be specific about issues and suggest solutions where possible`
@@ -325,8 +362,7 @@ Your task is to conduct a thorough pull request review. Here's how to approach i
      - Acknowledge good patterns: "Excellent use of Promise.all here for parallel operations - much more efficient"
      - Praise good tests: "The edge case tests for this function are fantastic and will prevent regressions"
      - Recognize cleanups: "This refactoring greatly improves readability and maintainability"
-     - Highlight security improvements: "Good catch adding input validation here"
-   - Keep your tracking comment updated with checkbox status only (no review content)
+     - Highlight security improvements: "Good catch adding input validation here"${allowPrReviews ? "" : "\n   - Keep your tracking comment updated with checkbox status only (no review content)"}
 
 6. **Strategic Review Sections (Context-Aware)**:
    ${
@@ -345,20 +381,18 @@ Your task is to conduct a thorough pull request review. Here's how to approach i
 7. **Final Steps**:
    ${
      allowPrReviews
-       ? `- Mark "Submit Formal Review" task as in progress in your tracking comment (checkbox only)
-   - Submit your formal review using mcp__github_review__submit_pr_review with your decision and ALL feedback
-   - Mark "Submit Formal Review" task as complete: - [x] Submit Formal Review
-   - Final tracking comment should ONLY show completed checkboxes, no review content
-   - Remember: Your review assessment and feedback belong in the formal review, not the tracking comment`
+       ? `- Submit your formal review using mcp__github_review__submit_pr_review with your decision and ALL feedback
+   - Include comprehensive assessment in the formal review body
+   - Use inline comments for specific code feedback
+   - No separate tracking comment management required`
        : `- Update your tracking comment with final review feedback using mcp__github_comment__update_claude_comment
    - Ensure all review tasks show as complete in your checklist`
    }
-   - Put your overall assessment in the formal review (if available) or tracking comment (if not)${
-     customPrompt
-       ? `
-   - Ensure your review addresses the custom instructions provided above`
-       : ""
-   }
+${allowPrReviews ? "" : "   - Put your overall assessment in the formal review (if available) or tracking comment (if not)"}${
+    customPrompt
+      ? `\n   - Ensure your review addresses the custom instructions provided above`
+      : ""
+  }
 
 Remember: Your goal is to help improve code quality while being helpful and collaborative with the development team.`;
 

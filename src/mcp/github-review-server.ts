@@ -3,8 +3,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import * as Sentry from "@sentry/node";
-import { createOctokit } from "../github/api/client";
+import { createOctokit, type Octokits } from "../github/api/client";
 import { sanitizeContent } from "../github/utils/sanitizer";
+import { generateMetadataComment } from "../github/utils/metadata-parser";
 
 // Initialize Sentry for error tracking
 if (process.env.SENTRY_DSN) {
@@ -29,6 +30,7 @@ if (process.env.SENTRY_DSN) {
 const REPO_OWNER = process.env.REPO_OWNER;
 const REPO_NAME = process.env.REPO_NAME;
 const PR_NUMBER = process.env.PR_NUMBER;
+const CLAUDE_COMMENT_ID = process.env.CLAUDE_COMMENT_ID;
 
 if (!REPO_OWNER || !REPO_NAME || !PR_NUMBER) {
   const error = new Error(
@@ -76,7 +78,8 @@ server.tool(
       const repo = REPO_NAME;
       const pull_number = parseInt(PR_NUMBER, 10);
 
-      const octokit = createOctokit(githubToken).rest;
+      const octokits = createOctokit(githubToken);
+      const octokit = octokits.rest;
 
       // Validate that body is provided for events that require it
       if (
@@ -104,6 +107,15 @@ server.tool(
         event,
         commit_id: commit_id || pr.data.head.sha,
       });
+
+      // After successful review submission, automatically add tracking comment metadata
+      await addTrackingCommentMetadata(
+        octokits,
+        owner,
+        repo,
+        result.data.id,
+        commit_id || pr.data.head.sha,
+      );
 
       return {
         content: [
@@ -174,6 +186,93 @@ server.tool(
     }
   },
 );
+
+/**
+ * Automatically adds tracking comment metadata after successful PR review submission.
+ * This ensures consistent metadata embedding without relying on the LLM.
+ */
+async function addTrackingCommentMetadata(
+  octokits: Octokits,
+  owner: string,
+  repo: string,
+  reviewId: number,
+  commitSha: string,
+): Promise<void> {
+  try {
+    // Only update tracking comment if CLAUDE_COMMENT_ID is available
+    if (!CLAUDE_COMMENT_ID) {
+      console.log("CLAUDE_COMMENT_ID not available - skipping metadata update");
+      return;
+    }
+
+    const commentId = parseInt(CLAUDE_COMMENT_ID, 10);
+    if (isNaN(commentId)) {
+      console.warn(
+        "Invalid CLAUDE_COMMENT_ID format - skipping metadata update",
+      );
+      return;
+    }
+
+    // Get the current tracking comment content
+    const comment = await octokits.rest.issues.getComment({
+      owner,
+      repo,
+      comment_id: commentId,
+    });
+
+    const currentBody = comment.data.body || "";
+
+    // Generate metadata for this review
+    const metadata = {
+      lastReviewedSha: commitSha,
+      reviewDate: new Date().toISOString(),
+      reviewId: reviewId.toString(),
+    };
+
+    const metadataComment = generateMetadataComment(metadata);
+
+    // Check if metadata already exists in the comment
+    const metadataRegex = /<!--\s*pr-review-metadata-v1:\s*{.*?}\s*-->/s;
+    let updatedBody: string;
+
+    if (metadataRegex.test(currentBody)) {
+      // Replace existing metadata
+      updatedBody = currentBody.replace(metadataRegex, metadataComment);
+    } else {
+      // Append metadata to the end of the comment
+      updatedBody = currentBody + "\n\n" + metadataComment;
+    }
+
+    // Update the tracking comment with metadata
+    await octokits.rest.issues.updateComment({
+      owner,
+      repo,
+      comment_id: commentId,
+      body: updatedBody,
+    });
+
+    console.log(
+      `Successfully added tracking metadata to comment ${commentId} for review ${reviewId}`,
+    );
+  } catch (error) {
+    // Log but don't fail the review submission if metadata update fails
+    console.warn("Failed to add tracking comment metadata:", error);
+
+    // Capture metadata update errors with context for debugging
+    Sentry.withScope((scope) => {
+      scope.setTag("operation", "add_tracking_metadata");
+      scope.setContext("metadata_details", {
+        comment_id: CLAUDE_COMMENT_ID,
+        review_id: reviewId,
+        commit_sha: commitSha,
+      });
+      scope.setLevel("warning");
+      Sentry.captureException(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    });
+  }
+}
 
 server.tool(
   "resolve_review_thread",
