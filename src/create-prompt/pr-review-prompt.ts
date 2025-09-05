@@ -331,7 +331,14 @@ async function analyzeExistingThreads(
       return {
         validThreads: [],
         outdatedThreads: [],
-        stats: { total: 0, resolved: 0, unresolved: 0, outdated: 0 },
+        threadsToResolve: [],
+        stats: {
+          total: 0,
+          resolved: 0,
+          unresolved: 0,
+          outdated: 0,
+          readyForResolution: 0,
+        },
         fileThreadMap: new Map(),
       };
     }
@@ -345,6 +352,9 @@ async function analyzeExistingThreads(
         file: string;
         line: number | null;
         isRelevant: boolean;
+        lastCommenter: string;
+        prAuthorResponded: boolean;
+        readyForResolution: boolean;
         comments: Array<{
           id: string;
           databaseId: string;
@@ -371,6 +381,9 @@ async function analyzeExistingThreads(
             file: comment.path,
             line: comment.line,
             isRelevant: true, // Will be analyzed based on current PR state
+            lastCommenter: "unknown",
+            prAuthorResponded: false,
+            readyForResolution: false,
             comments: [],
             reviewStates: [],
           });
@@ -397,7 +410,7 @@ async function analyzeExistingThreads(
     // Analyze threads for resolution and relevance
     const threads = Array.from(threadMap.values());
     const changedFiles = githubData.changedFiles || [];
-    
+
     // Get PR author for comparison
     const prAuthor = (githubData.contextData as any)?.author?.login || null;
 
@@ -425,38 +438,46 @@ async function analyzeExistingThreads(
       if (thread.comments.length > 0) {
         // Sort comments by creation date to find the last commenter
         const sortedComments = [...thread.comments].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
         );
-        
-        (thread as any).lastCommenter = sortedComments[0].author;
-        (thread as any).prAuthorResponded = prAuthor ? thread.comments.some(c => c.author === prAuthor) : false;
-        
+
+        thread.lastCommenter = sortedComments[0]?.author || "unknown";
+        thread.prAuthorResponded = prAuthor
+          ? thread.comments.some((c) => c.author === prAuthor)
+          : false;
+
         // Determine if thread is ready for resolution
         // A thread is ready for resolution if:
         // 1. PR author was the last commenter (indicating they've responded/addressed the issue)
         // 2. OR PR author has responded with explanatory context (we detect keywords)
-        const lastCommentByAuthor = (thread as any).lastCommenter === prAuthor;
-        const authorResponseContainsResolution = prAuthor && thread.comments
-          .filter(c => c.author === prAuthor)
-          .some(c => {
-            const body = c.body.toLowerCase();
-            return body.includes('fixed') || 
-                   body.includes('addressed') || 
-                   body.includes('updated') ||
-                   body.includes('changed') ||
-                   body.includes('done') ||
-                   body.includes('thanks') ||
-                   body.includes('good point') ||
-                   body.includes('you\'re right') ||
-                   body.includes('agreed') ||
-                   body.includes('implemented');
-          });
+        const lastCommentByAuthor = thread.lastCommenter === prAuthor;
+        const authorResponseContainsResolution =
+          prAuthor &&
+          thread.comments
+            .filter((c) => c.author === prAuthor)
+            .some((c) => {
+              const body = c.body.toLowerCase();
+              return (
+                body.includes("fixed") ||
+                body.includes("addressed") ||
+                body.includes("updated") ||
+                body.includes("changed") ||
+                body.includes("done") ||
+                body.includes("thanks") ||
+                body.includes("good point") ||
+                body.includes("you're right") ||
+                body.includes("agreed") ||
+                body.includes("implemented")
+              );
+            });
 
-        (thread as any).readyForResolution = lastCommentByAuthor || authorResponseContainsResolution;
+        thread.readyForResolution =
+          lastCommentByAuthor || authorResponseContainsResolution;
       } else {
-        (thread as any).lastCommenter = 'unknown';
-        (thread as any).prAuthorResponded = false;
-        (thread as any).readyForResolution = false;
+        thread.lastCommenter = "unknown";
+        thread.prAuthorResponded = false;
+        thread.readyForResolution = false;
       }
     }
 
@@ -471,29 +492,34 @@ async function analyzeExistingThreads(
 
     // Create threads ready for resolution with suggested messages
     const threadsToResolve = validThreads
-      .filter((t: any) => t.readyForResolution)
-      .map((t: any) => {
+      .filter((t) => t.readyForResolution)
+      .map((t) => {
         let suggestedMessage = "Thread resolved";
-        
+
         // Generate contextual resolution message based on author's response
-        if (t.lastCommenter === prAuthor) {
-          const lastComment = [...t.comments]
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-          const body = lastComment.body.toLowerCase();
-          
-          if (body.includes('fixed') || body.includes('addressed')) {
-            suggestedMessage = "Thanks for addressing this feedback!";
-          } else if (body.includes('updated') || body.includes('changed')) {
-            suggestedMessage = "Resolved - changes implemented as requested";
-          } else if (body.includes('done') || body.includes('implemented')) {
-            suggestedMessage = "Perfect, thanks for implementing this!";
-          } else if (body.includes('thanks') || body.includes('good point')) {
-            suggestedMessage = "Glad this was helpful - resolved";
-          } else {
-            suggestedMessage = "Thanks for the response - marking as resolved";
+        if (t.lastCommenter === prAuthor && t.comments.length > 0) {
+          const lastComment = [...t.comments].sort(
+            (a, b) =>
+              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+          )[0];
+          if (lastComment) {
+            const body = lastComment.body.toLowerCase();
+
+            if (body.includes("fixed") || body.includes("addressed")) {
+              suggestedMessage = "Thanks for addressing this feedback!";
+            } else if (body.includes("updated") || body.includes("changed")) {
+              suggestedMessage = "Resolved - changes implemented as requested";
+            } else if (body.includes("done") || body.includes("implemented")) {
+              suggestedMessage = "Perfect, thanks for implementing this!";
+            } else if (body.includes("thanks") || body.includes("good point")) {
+              suggestedMessage = "Glad this was helpful - resolved";
+            } else {
+              suggestedMessage =
+                "Thanks for the response - marking as resolved";
+            }
           }
         }
-        
+
         return {
           threadId: t.threadId,
           reason: `PR author responded - ready for resolution`,
@@ -549,6 +575,7 @@ async function analyzeExistingThreads(
     return {
       validThreads,
       outdatedThreads,
+      threadsToResolve,
       stats,
       fileThreadMap,
     };
@@ -557,7 +584,14 @@ async function analyzeExistingThreads(
     return {
       validThreads: [],
       outdatedThreads: [],
-      stats: { total: 0, resolved: 0, unresolved: 0, outdated: 0 },
+      threadsToResolve: [],
+      stats: {
+        total: 0,
+        resolved: 0,
+        unresolved: 0,
+        outdated: 0,
+        readyForResolution: 0,
+      },
       fileThreadMap: new Map(),
     };
   }
@@ -684,25 +718,64 @@ async function getDeduplicatedComments(
 }
 
 /**
- * Phase 3: Plan thread management actions
+ * Phase 3: Plan thread management actions with smart resolution detection
  */
 async function planThreadActions(
   threadAnalysis: ThreadAnalysis,
   cleanComments: DeduplicatedComment[],
 ): Promise<{
-  threadsToResolve: Array<{ threadId: string; reason: string }>;
+  threadsToResolve: Array<{
+    threadId: string;
+    reason: string;
+    suggestedMessage: string;
+  }>;
   threadsToReplyTo: Array<{ threadId: string; suggestedReply: string }>;
   newCommentsNeeded: boolean;
 }> {
-  return {
-    threadsToResolve: threadAnalysis.outdatedThreads,
-    threadsToReplyTo: threadAnalysis.validThreads
-      .filter((thread) => !thread.isResolved && thread.isRelevant)
-      .map((thread) => ({
+  // Combine outdated threads with threads ready for resolution
+  const allThreadsToResolve = [
+    // Outdated threads (from old logic)
+    ...threadAnalysis.outdatedThreads.map((thread) => ({
+      threadId: thread.threadId,
+      reason: thread.reason,
+      suggestedMessage: "No longer relevant - resolving outdated thread",
+    })),
+    // New: Threads ready for resolution based on author responses
+    ...threadAnalysis.threadsToResolve,
+  ];
+
+  // Threads that need follow-up (active threads that aren't ready for resolution)
+  const threadsToReplyTo = threadAnalysis.validThreads
+    .filter(
+      (thread) =>
+        !thread.isResolved && thread.isRelevant && !thread.readyForResolution,
+    )
+    .map((thread) => {
+      let suggestedReply =
+        "Following up on this thread in the context of recent changes.";
+
+      // Customize reply based on thread context
+      if (thread.prAuthorResponded) {
+        if (thread.lastCommenter !== thread.comments[0]?.author) {
+          // PR author responded but conversation continues
+          suggestedReply =
+            "Thanks for the response! Let me review the latest changes and follow up.";
+        }
+      } else {
+        // PR author hasn't responded yet
+        suggestedReply =
+          "Following up on this feedback - please let me know your thoughts on the suggested changes.";
+      }
+
+      return {
         threadId: thread.threadId,
-        suggestedReply:
-          "Following up on this thread in the context of recent changes.",
-      })),
+        suggestedReply,
+      };
+    });
+
+  return {
+    threadsToResolve: allThreadsToResolve,
+    threadsToReplyTo,
     newCommentsNeeded: cleanComments.length > 0,
   };
 }
@@ -799,6 +872,16 @@ Focus on files with active threads first to maintain conversation continuity and
 `
       : "";
 
+  const readyForResolutionSection =
+    threadAnalysis.stats.readyForResolution > 0
+      ? `
+**Threads Ready for Resolution (${threadAnalysis.stats.readyForResolution} total):**
+${threadAnalysis.threadsToResolve
+  .map((t) => `- ${t.threadId}: ${t.reason} - "${t.suggestedMessage}"`)
+  .join("\n")}
+`
+      : "";
+
   return `
 
 <thread_analysis_summary>
@@ -806,11 +889,12 @@ Focus on files with active threads first to maintain conversation continuity and
 - Total threads analyzed: ${threadAnalysis.stats.total}
 - Active threads: ${threadAnalysis.stats.unresolved}
 - Resolved threads: ${threadAnalysis.stats.resolved}
-- Outdated threads to be resolved: ${threadAnalysis.stats.outdated}
-${activeFilesSection}${resolvedFilesSection}${priorityGuidance}
+- Ready for resolution: ${threadAnalysis.stats.readyForResolution} (PR author responded)
+- Outdated threads: ${threadAnalysis.stats.outdated}
+${activeFilesSection}${resolvedFilesSection}${readyForResolutionSection}${priorityGuidance}
 ${
   threadAnalysis.outdatedThreads.length > 0
-    ? `**Threads marked for resolution:**
+    ? `**Outdated threads marked for resolution:**
 ${threadAnalysis.outdatedThreads.map((t) => `- Thread ${t.threadId}: ${t.reason}`).join("\n")}
 `
     : ""
@@ -1009,7 +1093,32 @@ IMPORTANT: Use mcp__github_inline_comment__create_inline_comment for:
 IMPORTANT: Use mcp__github_review__resolve_review_thread for:
 - Resolving previous review comment threads that are no longer applicable
 - Closing conversations where the issue has been addressed
+- **PRIORITY: Close threads with comments when PR author has addressed issues or provided necessary context**
 - Adding context when resolving threads (e.g., "Fixed in commit abc123", "No longer applicable after refactoring")
+
+**Thread Resolution Decision Matrix:**
+- ✅ **Close with comment** when:
+  * PR author was the last commenter (indicates they've addressed the feedback)
+  * PR author responded with "fixed", "addressed", "updated", "done", "implemented"
+  * PR author provided clarification or explanation ("thanks", "good point", "agreed")
+  * The issue has clearly been resolved in the latest code changes
+
+- 🔄 **Reply to continue discussion** when:
+  * Author's response needs clarification or follow-up
+  * New issues emerged from author's changes
+  * Technical discussion is ongoing and requires more input
+
+- ⏭️ **Leave thread open** when:
+  * Waiting for author's response to critical feedback
+  * Complex discussion that hasn't reached resolution
+  * Blocking issues that require significant changes
+
+**Resolution Message Templates:**
+- For fixes: "Thanks for addressing this feedback!"
+- For updates: "Resolved - changes implemented as requested"  
+- For implementations: "Perfect, thanks for implementing this!"
+- For clarifications: "Thanks for the explanation - marking as resolved"
+- For acknowledgments: "Glad this was helpful - resolved"
 
 IMPORTANT: Use mcp__github_review__submit_pr_review for:
 - Submitting your formal GitHub review with your decision (APPROVE, REQUEST_CHANGES, or COMMENT)
@@ -1231,10 +1340,25 @@ ${threadActions.threadsToReplyTo
     : ""
 }
 
-IMPORTANT: Use the enhanced thread management tools to:
-1. First resolve any outdated threads with mcp__github_review__bulk_resolve_threads
-2. Reply to relevant active threads with mcp__github_review__reply_to_thread  
-3. Then conduct your standard review process for new findings
+IMPORTANT: Use the enhanced thread management tools with priority-based resolution:
+
+**Thread Resolution Priority (Do this FIRST):**
+1. **High Priority - Close threads with comments**: Use mcp__github_review__resolve_review_thread for threads where:
+   - PR author was the last commenter (they've likely addressed the feedback)
+   - Author responded with resolution keywords ("fixed", "addressed", "implemented", etc.)
+   - Author provided satisfactory explanation or acknowledgment
+   - Use the suggested resolution messages from the thread analysis above
+
+2. **Medium Priority - Reply to ongoing discussions**: Use mcp__github_review__reply_to_thread for:
+   - Threads where author responded but needs follow-up
+   - Active discussions that require technical clarification
+   - Threads that need acknowledgment of author's response
+
+3. **Low Priority - Clean up outdated threads**: Use mcp__github_review__bulk_resolve_threads for:
+   - Threads on files that no longer exist or were significantly refactored
+   - Discussions that are no longer relevant to current PR state
+
+4. **Final Step - Standard review**: Then conduct your standard review process for new findings
 
 `
     : "";
