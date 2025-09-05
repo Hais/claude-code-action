@@ -37,7 +37,8 @@ interface IncrementalReviewData {
 
 interface ThreadAnalysis {
   validThreads: Array<{
-    threadId: string;
+    threadId: string; // Real GitHub GraphQL node ID
+    displayId: string; // Human-readable file:line format
     isResolved: boolean;
     file: string;
     line: number | null;
@@ -54,11 +55,13 @@ interface ThreadAnalysis {
     }>;
   }>;
   outdatedThreads: Array<{
-    threadId: string;
+    threadId: string; // Real GitHub GraphQL node ID
+    displayId: string; // Human-readable file:line format
     reason: string;
   }>;
   threadsToResolve: Array<{
-    threadId: string;
+    threadId: string; // Real GitHub GraphQL node ID
+    displayId: string; // Human-readable file:line format
     reason: string;
     suggestedMessage: string;
   }>;
@@ -75,7 +78,8 @@ interface ThreadAnalysis {
       activeThreads: number;
       resolvedThreads: number;
       totalComments: number;
-      threadIds: string[];
+      threadIds: string[]; // Real GitHub GraphQL node IDs
+      displayIds: string[]; // Human-readable file:line formats
     }
   >;
 }
@@ -101,8 +105,8 @@ async function formatGitHubDataThreadAware(
   FormattedGitHubData & {
     threadAnalysisSummary: string;
     threadActions: {
-      threadsToResolve: Array<{ threadId: string; reason: string }>;
-      threadsToReplyTo: Array<{ threadId: string; suggestedReply: string }>;
+      threadsToResolve: Array<{ threadId: string; displayId: string; reason: string; suggestedMessage: string }>;
+      threadsToReplyTo: Array<{ threadId: string; displayId: string; suggestedReply: string }>;
       newCommentsNeeded: boolean;
     };
   }
@@ -343,11 +347,12 @@ async function analyzeExistingThreads(
       };
     }
 
-    // Reconstruct threads from review comments
+    // Build thread mapping using real GitHub GraphQL node IDs
     const threadMap = new Map<
-      string,
+      string, // Real GitHub GraphQL node ID (comment.id)
       {
-        threadId: string;
+        threadId: string; // Real GitHub GraphQL node ID
+        displayId: string; // Human-readable file:line format
         isResolved: boolean;
         file: string;
         line: number | null;
@@ -366,17 +371,20 @@ async function analyzeExistingThreads(
       }
     >();
 
-    // Process all review comments to reconstruct threads
+    // Process all review comments using real GitHub thread IDs
     for (const review of githubData.reviewData.nodes) {
       const reviewState = review.state;
 
       for (const comment of review.comments.nodes) {
-        // Create thread identifier from file path and line number
-        const threadKey = `${comment.path}:${comment.line || "null"}`;
+        // Use the comment's GraphQL node ID as the thread ID
+        // This is what MCP tools expect!
+        const realThreadId = comment.id;
+        const displayId = `${comment.path}:${comment.line || "null"}`;
 
-        if (!threadMap.has(threadKey)) {
-          threadMap.set(threadKey, {
-            threadId: threadKey,
+        if (!threadMap.has(realThreadId)) {
+          threadMap.set(realThreadId, {
+            threadId: realThreadId, // Real GitHub GraphQL node ID
+            displayId: displayId, // Human-readable format for display
             isResolved: false, // Will be updated based on review states
             file: comment.path,
             line: comment.line,
@@ -389,7 +397,7 @@ async function analyzeExistingThreads(
           });
         }
 
-        const thread = threadMap.get(threadKey)!;
+        const thread = threadMap.get(realThreadId)!;
 
         // Add comment to thread
         thread.comments.push({
@@ -486,7 +494,8 @@ async function analyzeExistingThreads(
     const outdatedThreads = threads
       .filter((t) => !t.isRelevant)
       .map((t) => ({
-        threadId: t.threadId,
+        threadId: t.threadId, // Real GitHub GraphQL node ID
+        displayId: t.displayId, // Human-readable format
         reason: `Thread on ${t.file}${t.line ? `:${t.line}` : ""} is no longer relevant`,
       }));
 
@@ -521,7 +530,8 @@ async function analyzeExistingThreads(
         }
 
         return {
-          threadId: t.threadId,
+          threadId: t.threadId, // Real GitHub GraphQL node ID
+          displayId: t.displayId, // Human-readable format
           reason: `PR author responded - ready for resolution`,
           suggestedMessage,
         };
@@ -542,7 +552,8 @@ async function analyzeExistingThreads(
         activeThreads: number;
         resolvedThreads: number;
         totalComments: number;
-        threadIds: string[];
+        threadIds: string[]; // Real GitHub GraphQL node IDs
+        displayIds: string[]; // Human-readable file:line formats
       }
     >();
 
@@ -554,11 +565,13 @@ async function analyzeExistingThreads(
           resolvedThreads: 0,
           totalComments: 0,
           threadIds: [],
+          displayIds: [],
         });
       }
 
       const fileData = fileThreadMap.get(file)!;
-      fileData.threadIds.push(thread.threadId);
+      fileData.threadIds.push(thread.threadId); // Real GitHub ID
+      fileData.displayIds.push(thread.displayId); // Display format
       fileData.totalComments += thread.comments.length;
 
       if (thread.isResolved) {
@@ -726,10 +739,11 @@ async function planThreadActions(
 ): Promise<{
   threadsToResolve: Array<{
     threadId: string;
+    displayId: string;
     reason: string;
     suggestedMessage: string;
   }>;
-  threadsToReplyTo: Array<{ threadId: string; suggestedReply: string }>;
+  threadsToReplyTo: Array<{ threadId: string; displayId: string; suggestedReply: string }>;
   newCommentsNeeded: boolean;
 }> {
   // Combine outdated threads with threads ready for resolution
@@ -737,6 +751,7 @@ async function planThreadActions(
     // Outdated threads (from old logic)
     ...threadAnalysis.outdatedThreads.map((thread) => ({
       threadId: thread.threadId,
+      displayId: thread.displayId,
       reason: thread.reason,
       suggestedMessage: "No longer relevant - resolving outdated thread",
     })),
@@ -769,6 +784,7 @@ async function planThreadActions(
 
       return {
         threadId: thread.threadId,
+        displayId: thread.displayId,
         suggestedReply,
       };
     });
@@ -877,7 +893,7 @@ Focus on files with active threads first to maintain conversation continuity and
       ? `
 **Threads Ready for Resolution (${threadAnalysis.stats.readyForResolution} total):**
 ${threadAnalysis.threadsToResolve
-  .map((t) => `- ${t.threadId}: ${t.reason} - "${t.suggestedMessage}"`)
+  .map((t) => `- ${t.displayId}: ${t.reason} - "${t.suggestedMessage}" (MCP ID: ${t.threadId})`)
   .join("\n")}
 `
       : "";
@@ -895,7 +911,7 @@ ${activeFilesSection}${resolvedFilesSection}${readyForResolutionSection}${priori
 ${
   threadAnalysis.outdatedThreads.length > 0
     ? `**Outdated threads marked for resolution:**
-${threadAnalysis.outdatedThreads.map((t) => `- Thread ${t.threadId}: ${t.reason}`).join("\n")}
+${threadAnalysis.outdatedThreads.map((t) => `- Thread ${t.displayId}: ${t.reason} (MCP ID: ${t.threadId})`).join("\n")}
 `
     : ""
 }
@@ -1306,8 +1322,8 @@ function buildThreadAwareReviewProcessInstructions(
   allowPrReviews: boolean,
   customPrompt?: string,
   threadActions?: {
-    threadsToResolve: Array<{ threadId: string; reason: string }>;
-    threadsToReplyTo: Array<{ threadId: string; suggestedReply: string }>;
+    threadsToResolve: Array<{ threadId: string; displayId: string; reason: string; suggestedMessage: string }>;
+    threadsToReplyTo: Array<{ threadId: string; displayId: string; suggestedReply: string }>;
     newCommentsNeeded: boolean;
   },
 ): string {
@@ -1321,7 +1337,7 @@ ${
 ${threadActions.threadsToResolve
   .map(
     (t) =>
-      `- Use mcp__github_review__bulk_resolve_threads with thread ID ${t.threadId} (${t.reason})`,
+      `- Use mcp__github_review__bulk_resolve_threads with thread ID ${t.threadId} (Display: ${t.displayId}) - ${t.reason}`,
   )
   .join("\n")}
 `
@@ -1333,7 +1349,7 @@ ${
 ${threadActions.threadsToReplyTo
   .map(
     (t) =>
-      `- Use mcp__github_review__reply_to_thread for thread ID ${t.threadId}`,
+      `- Use mcp__github_review__reply_to_thread for thread ID ${t.threadId} (Display: ${t.displayId})`,
   )
   .join("\n")}
 `
