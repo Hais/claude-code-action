@@ -42,6 +42,9 @@ interface ThreadAnalysis {
     file: string;
     line: number | null;
     isRelevant: boolean;
+    lastCommenter: string;
+    prAuthorResponded: boolean;
+    readyForResolution: boolean;
     comments: Array<{
       id: string;
       databaseId: string;
@@ -54,11 +57,17 @@ interface ThreadAnalysis {
     threadId: string;
     reason: string;
   }>;
+  threadsToResolve: Array<{
+    threadId: string;
+    reason: string;
+    suggestedMessage: string;
+  }>;
   stats: {
     total: number;
     resolved: number;
     unresolved: number;
     outdated: number;
+    readyForResolution: number;
   };
   fileThreadMap: Map<
     string,
@@ -388,6 +397,9 @@ async function analyzeExistingThreads(
     // Analyze threads for resolution and relevance
     const threads = Array.from(threadMap.values());
     const changedFiles = githubData.changedFiles || [];
+    
+    // Get PR author for comparison
+    const prAuthor = (githubData.contextData as any)?.author?.login || null;
 
     for (const thread of threads) {
       // Determine if thread is resolved based on review states
@@ -408,6 +420,44 @@ async function analyzeExistingThreads(
       if (!thread.isRelevant) {
         thread.isRelevant = false;
       }
+
+      // Enhanced analysis for thread resolution readiness
+      if (thread.comments.length > 0) {
+        // Sort comments by creation date to find the last commenter
+        const sortedComments = [...thread.comments].sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        
+        (thread as any).lastCommenter = sortedComments[0].author;
+        (thread as any).prAuthorResponded = prAuthor ? thread.comments.some(c => c.author === prAuthor) : false;
+        
+        // Determine if thread is ready for resolution
+        // A thread is ready for resolution if:
+        // 1. PR author was the last commenter (indicating they've responded/addressed the issue)
+        // 2. OR PR author has responded with explanatory context (we detect keywords)
+        const lastCommentByAuthor = (thread as any).lastCommenter === prAuthor;
+        const authorResponseContainsResolution = prAuthor && thread.comments
+          .filter(c => c.author === prAuthor)
+          .some(c => {
+            const body = c.body.toLowerCase();
+            return body.includes('fixed') || 
+                   body.includes('addressed') || 
+                   body.includes('updated') ||
+                   body.includes('changed') ||
+                   body.includes('done') ||
+                   body.includes('thanks') ||
+                   body.includes('good point') ||
+                   body.includes('you\'re right') ||
+                   body.includes('agreed') ||
+                   body.includes('implemented');
+          });
+
+        (thread as any).readyForResolution = lastCommentByAuthor || authorResponseContainsResolution;
+      } else {
+        (thread as any).lastCommenter = 'unknown';
+        (thread as any).prAuthorResponded = false;
+        (thread as any).readyForResolution = false;
+      }
     }
 
     // Separate valid and outdated threads
@@ -419,11 +469,44 @@ async function analyzeExistingThreads(
         reason: `Thread on ${t.file}${t.line ? `:${t.line}` : ""} is no longer relevant`,
       }));
 
+    // Create threads ready for resolution with suggested messages
+    const threadsToResolve = validThreads
+      .filter((t: any) => t.readyForResolution)
+      .map((t: any) => {
+        let suggestedMessage = "Thread resolved";
+        
+        // Generate contextual resolution message based on author's response
+        if (t.lastCommenter === prAuthor) {
+          const lastComment = [...t.comments]
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+          const body = lastComment.body.toLowerCase();
+          
+          if (body.includes('fixed') || body.includes('addressed')) {
+            suggestedMessage = "Thanks for addressing this feedback!";
+          } else if (body.includes('updated') || body.includes('changed')) {
+            suggestedMessage = "Resolved - changes implemented as requested";
+          } else if (body.includes('done') || body.includes('implemented')) {
+            suggestedMessage = "Perfect, thanks for implementing this!";
+          } else if (body.includes('thanks') || body.includes('good point')) {
+            suggestedMessage = "Glad this was helpful - resolved";
+          } else {
+            suggestedMessage = "Thanks for the response - marking as resolved";
+          }
+        }
+        
+        return {
+          threadId: t.threadId,
+          reason: `PR author responded - ready for resolution`,
+          suggestedMessage,
+        };
+      });
+
     const stats = {
       total: threads.length,
       resolved: threads.filter((t) => t.isResolved).length,
       unresolved: threads.filter((t) => !t.isResolved).length,
       outdated: outdatedThreads.length,
+      readyForResolution: threadsToResolve.length,
     };
 
     // Build file thread map for efficient LLM guidance
