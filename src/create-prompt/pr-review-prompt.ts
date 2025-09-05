@@ -301,10 +301,10 @@ Review workflow:
 3. Follow-up review: Use mcp__github_review__resolve_review_thread to resolve outdated conversations from previous reviews
 4. Status update: Use mcp__github_comment__update_claude_comment ONLY to update the task checklist (- [x] markings)
 
-Tool usage example for mcp__github_review__submit_pr_review (with summary + expandable format):
+Tool usage example for mcp__github_review__submit_pr_review (with status + expandable format):
 {
-  "event": "COMMENT|REQUEST_CHANGES|APPROVE",
-  "body": "## Summary\\nThis PR implements user authentication with solid error handling and clean architecture. The changes look good overall, with just a few minor security considerations to address.\\n\\n<details>\\n<summary><b>📋 Full Review Details</b></summary>\\n\\n### What's Solid ✨\\n- Excellent input validation on login endpoints\\n- Clean separation of concerns in auth middleware\\n- Comprehensive test coverage for edge cases\\n\\n### Key Issues\\n🟡 **Medium [Security]**: Consider rate limiting on login attempts\\n🟢 **Low [Style]**: Consistent error message formatting\\n\\n</details>"
+  "event": "COMMENT",
+  "body": "## 💬 Comments\\nThis PR implements user authentication with solid error handling and clean architecture. The changes look good overall, with just a few minor security considerations to address before approval.\\n\\n<details>\\n<summary><b>📋 Full Review Details</b></summary>\\n\\n### What's Solid ✨\\n- Excellent input validation on login endpoints\\n- Clean separation of concerns in auth middleware\\n- Comprehensive test coverage for edge cases\\n\\n### Key Issues\\n🟡 **Medium [Security]**: Consider rate limiting on login attempts\\n🟢 **Low [Style]**: Consistent error message formatting\\n\\n</details>"
 }
 
 Tool usage example for mcp__github_inline_comment__create_inline_comment (inline comment with severity tagging):
@@ -354,8 +354,13 @@ IMPORTANT: Use mcp__github_review__resolve_review_thread for:
 
 IMPORTANT: Use mcp__github_review__submit_pr_review for:
 - Submitting your formal GitHub review with your decision (APPROVE, REQUEST_CHANGES, or COMMENT)
-- Start with concise summary (2-3 sentences) with verdict, then expandable details section
-- Providing comprehensive assessment using the summary + <details> format shown above
+- Start with quick status indicator (e.g., ## ✅ LGTM) plus 2-3 sentence assessment
+- Follow with expandable <details> section containing comprehensive analysis
+- **Status Selection Guide:**
+  - Use ✅ LGTM for APPROVE events (clean code, minor issues only)
+  - Use 🔧 Needs Changes for REQUEST_CHANGES events (blocking issues found)
+  - Use 💬 Comments for COMMENT events (feedback without blocking)
+  - Use specific indicators (🐞, ⚠️, 🏗️, 🚀, 📚) when primary issue type is clear
 - This creates the official review record on the PR
 
 IMPORTANT: Use mcp__github_comment__update_claude_comment for:
@@ -448,7 +453,7 @@ function buildReviewProcessInstructions(
      
      **Format Structure:**
      \`\`\`
-     ## Summary
+     ## [Status Icon] [Quick Status]
      [2-3 sentence concise assessment with clear verdict and reasoning]
      
      <details>
@@ -464,9 +469,20 @@ function buildReviewProcessInstructions(
      - **Risk Assessment** (high-impact changes): Potential downstream effects, rollback considerations  
      - **Test Plan Verification** (significant logic changes): Coverage gaps, edge cases
      - **Architecture Notes** (structural changes): Design patterns, future maintainability
+     - etc..
      
      </details>
      \`\`\`
+     
+     **Quick Status Examples:**
+     - \`## ✅ LGTM\` - Clean approval, minor or no issues
+     - \`## 🔧 Needs Changes\` - Issues requiring fixes before merge  
+     - \`## 💬 Comments\` - Feedback/questions, no blocking issues
+     - \`## 🐞 Bugs Found\` - Functional issues identified
+     - \`## ⚠️ Security Issues\` - Security concerns present
+     - \`## 🏗️ Architecture Concerns\` - Design/structure issues
+     - \`## 🚀 Performance Issues\` - Performance problems detected
+     - \`## 📚 Needs Documentation\` - Missing/inadequate docs
      
    - This format provides quick scanning for busy developers while preserving detailed analysis
    - Only include strategic sections when relevant to avoid formality for simple changes`
