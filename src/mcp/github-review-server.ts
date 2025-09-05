@@ -390,15 +390,63 @@ server.tool(
         pull_number,
       });
 
-      // Simple, stateless review submission
-      const result = await octokit.rest.pulls.createReview({
+      // Pre-flight check: Look for existing pending reviews
+      const pendingReviews = await getPendingReviews(
+        octokits,
         owner,
         repo,
         pull_number,
-        body: sanitizedBody,
-        event,
-        commit_id: commit_id || pr.data.head.sha,
-      });
+      );
+
+      let result: any;
+      let handledExistingReview = false;
+
+      if (pendingReviews.length > 0) {
+        // Handle existing pending review
+        const pendingReview = pendingReviews[0]!; // Take the first (should only be one)
+        console.log(
+          `Found existing pending review (ID: ${pendingReview.id}), attempting to submit it with merged content`,
+        );
+
+        const handleResult = await handleExistingPendingReview(
+          octokits,
+          owner,
+          repo,
+          pull_number,
+          { id: pendingReview.id, body: pendingReview.body },
+          {
+            body: sanitizedBody,
+            event,
+            commit_id: commit_id || pr.data.head.sha,
+          },
+        );
+
+        if (handleResult.success) {
+          // Successfully submitted existing pending review with merged content
+          result = { data: { id: handleResult.review_id } };
+          handledExistingReview = true;
+        } else if (handleResult.action === "dismissed_pending_review") {
+          // Dismissed existing review, now create new one
+          console.log("Dismissed existing pending review, creating new review");
+        } else {
+          // Failed to handle existing pending review
+          throw new Error(
+            `Failed to handle existing pending review: ${handleResult.message}`,
+          );
+        }
+      }
+
+      // Create new review if we didn't handle an existing one
+      if (!handledExistingReview) {
+        result = await octokit.rest.pulls.createReview({
+          owner,
+          repo,
+          pull_number,
+          body: sanitizedBody,
+          event,
+          commit_id: commit_id || pr.data.head.sha,
+        });
+      }
 
       // After successful review submission, automatically add tracking comment metadata
       await addTrackingCommentMetadata(
@@ -432,6 +480,75 @@ server.tool(
       const errorMessage =
         error instanceof Error ? error.message : String(error);
 
+      // Handle specific "pending review" constraint error
+      if (errorMessage.includes("User can only have one pending review")) {
+        console.warn("Detected pending review constraint error, attempting recovery");
+        
+        // Attempt recovery by finding and handling pending review
+        try {
+          const recoveryOctokits = createOctokit(process.env.GITHUB_TOKEN!);
+          const pendingReviews = await getPendingReviews(
+            recoveryOctokits,
+            REPO_OWNER,
+            REPO_NAME,
+            parseInt(PR_NUMBER, 10),
+          );
+
+          if (pendingReviews.length > 0) {
+            const pendingReview = pendingReviews[0]!;
+            console.log(`Found pending review ${pendingReview.id} during error recovery`);
+
+            const handleResult = await handleExistingPendingReview(
+              recoveryOctokits,
+              REPO_OWNER,
+              REPO_NAME,
+              parseInt(PR_NUMBER, 10),
+              { id: pendingReview.id, body: pendingReview.body },
+              { body: sanitizeContent(body), event, commit_id },
+            );
+
+            if (handleResult.success) {
+              // Recovery successful - return success response
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify(
+                      {
+                        success: true,
+                        review_id: handleResult.review_id,
+                        html_url: `https://github.com/${REPO_OWNER}/${REPO_NAME}/pull/${PR_NUMBER}#pullrequestreview-${handleResult.review_id}`,
+                        state: event,
+                        event,
+                        message: `PR review recovered and submitted successfully: ${handleResult.message}`,
+                        recovery_action: handleResult.action,
+                      },
+                      null,
+                      2,
+                    ),
+                  },
+                ],
+              };
+            }
+          }
+
+          // Recovery failed - provide helpful error message
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Error: ${errorMessage}\n\nRecovery attempted but failed. You have a pending review on this PR that must be submitted or dismissed first. Please:\n1. Check your pending review in the GitHub UI\n2. Submit it with APPROVE, REQUEST_CHANGES, or COMMENT\n3. Or dismiss the pending review\n4. Then retry this operation`,
+              },
+            ],
+            error: errorMessage,
+            isError: true,
+          };
+        } catch (recoveryError) {
+          console.warn("Recovery attempt failed:", recoveryError);
+          // Fall through to normal error handling
+        }
+      }
+
       // Capture submit_pr_review errors with context
       Sentry.withScope((scope) => {
         scope.setTag("operation", "submit_pr_review");
@@ -458,7 +575,10 @@ server.tool(
 
       // Provide more helpful error messages for common issues
       let helpMessage = "";
-      if (errorMessage.includes("Validation Failed")) {
+      if (errorMessage.includes("User can only have one pending review")) {
+        helpMessage =
+          "\n\nThis error occurs when you already have a pending review on this PR. GitHub only allows one pending review per user per PR. The system attempted automatic recovery but it failed. Please check the GitHub UI and submit or dismiss your existing pending review, then try again.";
+      } else if (errorMessage.includes("Validation Failed")) {
         helpMessage =
           "\n\nThis usually means the PR has already been merged, closed, or there's an issue with the commit SHA.";
       } else if (errorMessage.includes("Not Found")) {
@@ -467,6 +587,9 @@ server.tool(
       } else if (errorMessage.includes("Forbidden")) {
         helpMessage =
           "\n\nThis usually means you don't have permission to submit reviews on this repository.";
+      } else if (errorMessage.includes("Unprocessable Entity")) {
+        helpMessage =
+          "\n\nThis usually indicates a problem with the request data or PR state. Check if the PR is still open and the commit SHA is valid.";
       }
 
       return {
@@ -570,6 +693,125 @@ async function addTrackingCommentMetadata(
         error instanceof Error ? error : new Error(String(error)),
       );
     });
+  }
+}
+
+/**
+ * Get existing pending reviews for the authenticated user on a specific PR
+ */
+async function getPendingReviews(
+  octokits: Octokits,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<Array<{
+  id: number;
+  node_id: string;
+  state: string;
+  body: string;
+  user: { login: string };
+}>> {
+  try {
+    const reviews = await octokits.rest.pulls.listReviews({
+      owner,
+      repo,
+      pull_number: pullNumber,
+    });
+
+    // Filter for pending reviews by the authenticated user
+    const pendingReviews = reviews.data.filter(
+      (review) => review.state === "PENDING"
+    );
+
+    return pendingReviews.map((review) => ({
+      id: review.id,
+      node_id: review.node_id,
+      state: review.state,
+      body: review.body || "",
+      user: review.user || { login: "" },
+    }));
+  } catch (error) {
+    console.warn("Failed to fetch pending reviews:", error);
+    return [];
+  }
+}
+
+/**
+ * Handle existing pending review by submitting it with merged content
+ */
+async function handleExistingPendingReview(
+  octokits: Octokits,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  pendingReview: { id: number; body: string },
+  newReviewData: { body: string; event: string; commit_id?: string },
+): Promise<{
+  success: boolean;
+  action: string;
+  review_id: number;
+  message: string;
+}> {
+  try {
+    // Strategy: Submit the existing pending review with merged content
+    // Combine existing body with new body if both exist
+    let mergedBody = "";
+    
+    if (pendingReview.body && pendingReview.body.trim()) {
+      mergedBody += pendingReview.body.trim();
+    }
+    
+    if (newReviewData.body && newReviewData.body.trim()) {
+      if (mergedBody) {
+        mergedBody += "\n\n---\n\n"; // Separator between old and new content
+      }
+      mergedBody += newReviewData.body.trim();
+    }
+
+    // Submit the pending review with merged content
+    const result = await octokits.rest.pulls.submitReview({
+      owner,
+      repo,
+      pull_number: pullNumber,
+      review_id: pendingReview.id,
+      body: mergedBody || newReviewData.body,
+      event: newReviewData.event as "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+    });
+
+    return {
+      success: true,
+      action: "submitted_existing_pending_review",
+      review_id: result.data.id,
+      message: `Submitted existing pending review with merged content using ${newReviewData.event} state`,
+    };
+  } catch (error) {
+    console.warn("Failed to submit existing pending review:", error);
+    
+    // Fallback: Try to dismiss the existing pending review and let caller create new one
+    try {
+      await octokits.rest.pulls.dismissReview({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        review_id: pendingReview.id,
+        message: "Dismissed to create new review",
+      });
+      
+      return {
+        success: false,
+        action: "dismissed_pending_review",
+        review_id: pendingReview.id,
+        message: "Dismissed existing pending review - caller should retry creating new review",
+      };
+    } catch (dismissError) {
+      console.warn("Failed to dismiss pending review:", dismissError);
+      return {
+        success: false,
+        action: "failed_to_handle_pending",
+        review_id: pendingReview.id,
+        message: "Could not submit or dismiss existing pending review",
+      };
+    }
   }
 }
 
