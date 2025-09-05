@@ -301,10 +301,10 @@ Review workflow:
 3. Follow-up review: Use mcp__github_review__resolve_review_thread to resolve outdated conversations from previous reviews
 4. Status update: Use mcp__github_comment__update_claude_comment ONLY to update the task checklist (- [x] markings)
 
-Tool usage example for mcp__github_review__submit_pr_review (short summary only):
+Tool usage example for mcp__github_review__submit_pr_review (with summary + expandable format):
 {
   "event": "COMMENT|REQUEST_CHANGES|APPROVE",
-  "body": "Brief overall assessment and rationale for your review decision"
+  "body": "## Summary\\nThis PR implements user authentication with solid error handling and clean architecture. The changes look good overall, with just a few minor security considerations to address.\\n\\n<details>\\n<summary><b>📋 Full Review Details</b></summary>\\n\\n### What's Solid ✨\\n- Excellent input validation on login endpoints\\n- Clean separation of concerns in auth middleware\\n- Comprehensive test coverage for edge cases\\n\\n### Key Issues\\n🟡 **Medium [Security]**: Consider rate limiting on login attempts\\n🟢 **Low [Style]**: Consistent error message formatting\\n\\n</details>"
 }
 
 Tool usage example for mcp__github_inline_comment__create_inline_comment (inline comment with severity tagging):
@@ -354,7 +354,8 @@ IMPORTANT: Use mcp__github_review__resolve_review_thread for:
 
 IMPORTANT: Use mcp__github_review__submit_pr_review for:
 - Submitting your formal GitHub review with your decision (APPROVE, REQUEST_CHANGES, or COMMENT)
-- Providing a brief overall assessment and rationale for your review decision
+- Start with concise summary (2-3 sentences) with verdict, then expandable details section
+- Providing comprehensive assessment using the summary + <details> format shown above
 - This creates the official review record on the PR
 
 IMPORTANT: Use mcp__github_comment__update_claude_comment for:
@@ -435,20 +436,39 @@ function buildReviewProcessInstructions(
 
   const finalStepsInstructions = allowPrReviews
     ? `- Submit your formal review using mcp__github_review__submit_pr_review with your decision and ALL feedback
-   - Include comprehensive assessment in the formal review body
-   - Use inline comments for specific code feedback
+   - Start with a **concise 2-3 sentence summary** stating your verdict and key reasoning
+   - Follow with **detailed analysis in expandable <details> section** for full transparency
+   - Use inline comments for specific line-by-line feedback
    - No separate tracking comment management required`
     : `- Update your tracking comment with final review feedback using mcp__github_comment__update_claude_comment
    - Ensure all review tasks show as complete in your checklist`;
 
   const structureInstructions = allowPrReviews
-    ? `- **Structure your formal review with these sections when applicable:**
-     - **Summary**: Brief overview of changes and overall assessment
-     - **What's Solid**: Specific positive reinforcement (ESSENTIAL for mentorship)
-     - **Key Issues**: Organized by severity (🔴 Blockers first, then 🟠 High, etc.)
-     - **Risk Assessment** (if high-impact changes): Potential downstream effects, rollback considerations
-     - **Test Plan Verification** (if significant logic changes): Coverage gaps, edge cases
-     - **Architecture Notes** (if structural changes): Design patterns, future maintainability
+    ? `- **Structure your formal review with concise summary + expandable details:**
+     
+     **Format Structure:**
+     \`\`\`
+     ## Summary
+     [2-3 sentence concise assessment with clear verdict and reasoning]
+     
+     <details>
+     <summary><b>📋 Full Review Details</b></summary>
+     
+     ### What's Solid ✨
+     [Specific positive reinforcement - ESSENTIAL for mentorship]
+     
+     ### Key Issues
+     [Organized by severity: 🔴 Blockers first, then 🟠 High, 🟡 Medium, 🟢 Low]
+     
+     ### [Additional sections as applicable]
+     - **Risk Assessment** (high-impact changes): Potential downstream effects, rollback considerations  
+     - **Test Plan Verification** (significant logic changes): Coverage gaps, edge cases
+     - **Architecture Notes** (structural changes): Design patterns, future maintainability
+     
+     </details>
+     \`\`\`
+     
+   - This format provides quick scanning for busy developers while preserving detailed analysis
    - Only include strategic sections when relevant to avoid formality for simple changes`
     : `- Structure your tracking comment with clear sections when reviewing complex PRs`;
 
