@@ -60,6 +60,15 @@ interface ThreadAnalysis {
     unresolved: number;
     outdated: number;
   };
+  fileThreadMap: Map<
+    string,
+    {
+      activeThreads: number;
+      resolvedThreads: number;
+      totalComments: number;
+      threadIds: string[];
+    }
+  >;
 }
 
 interface DeduplicatedComment {
@@ -314,34 +323,38 @@ async function analyzeExistingThreads(
         validThreads: [],
         outdatedThreads: [],
         stats: { total: 0, resolved: 0, unresolved: 0, outdated: 0 },
+        fileThreadMap: new Map(),
       };
     }
 
     // Reconstruct threads from review comments
-    const threadMap = new Map<string, {
-      threadId: string;
-      isResolved: boolean;
-      file: string;
-      line: number | null;
-      isRelevant: boolean;
-      comments: Array<{
-        id: string;
-        databaseId: string;
-        body: string;
-        author: string;
-        createdAt: string;
-      }>;
-      reviewStates: string[];
-    }>();
+    const threadMap = new Map<
+      string,
+      {
+        threadId: string;
+        isResolved: boolean;
+        file: string;
+        line: number | null;
+        isRelevant: boolean;
+        comments: Array<{
+          id: string;
+          databaseId: string;
+          body: string;
+          author: string;
+          createdAt: string;
+        }>;
+        reviewStates: string[];
+      }
+    >();
 
     // Process all review comments to reconstruct threads
     for (const review of githubData.reviewData.nodes) {
       const reviewState = review.state;
-      
+
       for (const comment of review.comments.nodes) {
         // Create thread identifier from file path and line number
-        const threadKey = `${comment.path}:${comment.line || 'null'}`;
-        
+        const threadKey = `${comment.path}:${comment.line || "null"}`;
+
         if (!threadMap.has(threadKey)) {
           threadMap.set(threadKey, {
             threadId: threadKey,
@@ -355,7 +368,7 @@ async function analyzeExistingThreads(
         }
 
         const thread = threadMap.get(threadKey)!;
-        
+
         // Add comment to thread
         thread.comments.push({
           id: comment.id,
@@ -375,20 +388,22 @@ async function analyzeExistingThreads(
     // Analyze threads for resolution and relevance
     const threads = Array.from(threadMap.values());
     const changedFiles = githubData.changedFiles || [];
-    
+
     for (const thread of threads) {
       // Determine if thread is resolved based on review states
-      thread.isResolved = thread.reviewStates.includes('APPROVED') && 
-                         !thread.reviewStates.includes('CHANGES_REQUESTED');
-      
+      thread.isResolved =
+        thread.reviewStates.includes("APPROVED") &&
+        !thread.reviewStates.includes("CHANGES_REQUESTED");
+
       // Determine relevance - thread is relevant if:
       // 1. The file is still being changed in this PR, OR
       // 2. The file exists in the current PR (even if not changed)
-      const fileStillExists = changedFiles.some(f => f.path === thread.file) ||
-                             thread.file.length > 0; // Basic existence check
-      
+      const fileStillExists =
+        changedFiles.some((f) => f.path === thread.file) ||
+        thread.file.length > 0; // Basic existence check
+
       thread.isRelevant = fileStillExists;
-      
+
       // Mark as outdated if file was deleted
       if (!thread.isRelevant) {
         thread.isRelevant = false;
@@ -396,27 +411,63 @@ async function analyzeExistingThreads(
     }
 
     // Separate valid and outdated threads
-    const validThreads = threads.filter(t => !t.isResolved && t.isRelevant);
+    const validThreads = threads.filter((t) => !t.isResolved && t.isRelevant);
     const outdatedThreads = threads
-      .filter(t => !t.isRelevant)
-      .map(t => ({
+      .filter((t) => !t.isRelevant)
+      .map((t) => ({
         threadId: t.threadId,
-        reason: `Thread on ${t.file}${t.line ? `:${t.line}` : ''} is no longer relevant`,
+        reason: `Thread on ${t.file}${t.line ? `:${t.line}` : ""} is no longer relevant`,
       }));
 
     const stats = {
       total: threads.length,
-      resolved: threads.filter(t => t.isResolved).length,
-      unresolved: threads.filter(t => !t.isResolved).length,
+      resolved: threads.filter((t) => t.isResolved).length,
+      unresolved: threads.filter((t) => !t.isResolved).length,
       outdated: outdatedThreads.length,
     };
 
-    console.log(`Thread analysis: ${stats.total} total, ${stats.unresolved} unresolved, ${stats.resolved} resolved, ${stats.outdated} outdated`);
+    // Build file thread map for efficient LLM guidance
+    const fileThreadMap = new Map<
+      string,
+      {
+        activeThreads: number;
+        resolvedThreads: number;
+        totalComments: number;
+        threadIds: string[];
+      }
+    >();
+
+    for (const thread of threads) {
+      const file = thread.file;
+      if (!fileThreadMap.has(file)) {
+        fileThreadMap.set(file, {
+          activeThreads: 0,
+          resolvedThreads: 0,
+          totalComments: 0,
+          threadIds: [],
+        });
+      }
+
+      const fileData = fileThreadMap.get(file)!;
+      fileData.threadIds.push(thread.threadId);
+      fileData.totalComments += thread.comments.length;
+
+      if (thread.isResolved) {
+        fileData.resolvedThreads += 1;
+      } else {
+        fileData.activeThreads += 1;
+      }
+    }
+
+    console.log(
+      `Thread analysis: ${stats.total} total, ${stats.unresolved} unresolved, ${stats.resolved} resolved, ${stats.outdated} outdated across ${fileThreadMap.size} files`,
+    );
 
     return {
       validThreads,
       outdatedThreads,
       stats,
+      fileThreadMap,
     };
   } catch (error) {
     console.warn("Thread analysis failed, falling back to basic mode:", error);
@@ -424,6 +475,7 @@ async function analyzeExistingThreads(
       validThreads: [],
       outdatedThreads: [],
       stats: { total: 0, resolved: 0, unresolved: 0, outdated: 0 },
+      fileThreadMap: new Map(),
     };
   }
 }
@@ -456,8 +508,8 @@ async function buildThreadCommentMapping(
         }
 
         // Create consistent thread key (same as in analyzeExistingThreads)
-        const threadKey = `${comment.path}:${comment.line || 'null'}`;
-        
+        const threadKey = `${comment.path}:${comment.line || "null"}`;
+
         // Use the first comment's ID as the thread ID (consistent with GitHub's approach)
         if (!threadMap.has(threadKey)) {
           // Generate deterministic thread ID from first comment in thread
@@ -473,7 +525,9 @@ async function buildThreadCommentMapping(
       }
     }
 
-    console.log(`Built thread comment mapping: ${threadCommentMap.size} comments mapped to threads`);
+    console.log(
+      `Built thread comment mapping: ${threadCommentMap.size} comments mapped to threads`,
+    );
     return threadCommentMap;
   } catch (error) {
     console.warn(
@@ -615,6 +669,53 @@ function formatThreadAnalysisSummary(threadAnalysis: ThreadAnalysis): string {
     return "";
   }
 
+  // Sort files by total thread activity (active + resolved) for prioritization
+  const filesWithActiveThreads = Array.from(
+    threadAnalysis.fileThreadMap.entries(),
+  )
+    .filter(([, data]) => data.activeThreads > 0)
+    .sort((a, b) => b[1].activeThreads - a[1].activeThreads);
+
+  const filesWithOnlyResolvedThreads = Array.from(
+    threadAnalysis.fileThreadMap.entries(),
+  )
+    .filter(([, data]) => data.activeThreads === 0 && data.resolvedThreads > 0)
+    .sort((a, b) => b[1].resolvedThreads - a[1].resolvedThreads);
+
+  const activeFilesSection =
+    filesWithActiveThreads.length > 0
+      ? `
+**Files with Active Review Threads (${filesWithActiveThreads.length} total):**
+${filesWithActiveThreads
+  .map(
+    ([file, data]) =>
+      `- ${file} (${data.activeThreads} unresolved thread${data.activeThreads > 1 ? "s" : ""}, ${data.totalComments} comment${data.totalComments > 1 ? "s" : ""})`,
+  )
+  .join("\n")}
+`
+      : "";
+
+  const resolvedFilesSection =
+    filesWithOnlyResolvedThreads.length > 0
+      ? `
+**Files with Resolved Threads Only (${filesWithOnlyResolvedThreads.length} total):**
+${filesWithOnlyResolvedThreads
+  .map(
+    ([file, data]) =>
+      `- ${file} (${data.resolvedThreads} resolved thread${data.resolvedThreads > 1 ? "s" : ""})`,
+  )
+  .join("\n")}
+`
+      : "";
+
+  const priorityGuidance =
+    filesWithActiveThreads.length > 0
+      ? `
+**Priority Review Guidance:**
+Focus on files with active threads first to maintain conversation continuity and address existing concerns before reviewing unchanged areas.
+`
+      : "";
+
   return `
 
 <thread_analysis_summary>
@@ -623,7 +724,7 @@ function formatThreadAnalysisSummary(threadAnalysis: ThreadAnalysis): string {
 - Active threads: ${threadAnalysis.stats.unresolved}
 - Resolved threads: ${threadAnalysis.stats.resolved}
 - Outdated threads to be resolved: ${threadAnalysis.stats.outdated}
-
+${activeFilesSection}${resolvedFilesSection}${priorityGuidance}
 ${
   threadAnalysis.outdatedThreads.length > 0
     ? `**Threads marked for resolution:**
@@ -746,6 +847,12 @@ IMPORTANT: You have been provided with TWO DISTINCT types of tools:
 - mcp__github_review__bulk_resolve_threads: Resolve multiple outdated threads at once with explanation
 - mcp__github_review__get_diff_context: Get code context around specific lines for thread validation
 - mcp__github_review__get_review_stats: Get comprehensive PR review statistics
+
+**Efficient Thread Discovery Strategy:**
+- Files with active threads are listed in the thread analysis summary above
+- ONLY call mcp__github_review__get_file_comments for files that appear in the "Files with Active Review Threads" section
+- This targeted approach reduces API calls and speeds up your review process
+- For files without existing threads, proceed directly with standard review without calling get_file_comments
 
 **Severity Classification System:**
 Use these severity levels with human-friendly tagging for all review feedback:
@@ -1063,17 +1170,26 @@ IMPORTANT: Use the enhanced thread management tools to:
    - Thread relevance has been analyzed against current code
    - Outdated threads have been identified for resolution
 
-2. **Intelligent Comment Processing**:
+2. **File-Prioritized Review Strategy**:
+   - Files with active threads are listed above and should be reviewed FIRST
+   - For each file with active threads:
+     a) Call mcp__github_review__get_file_comments to get full thread context
+     b) Address existing conversations before adding new feedback
+     c) Use reply_to_thread or resolve_review_thread as appropriate
+   - For files without existing threads, proceed with standard review
+   - This approach maintains conversation continuity and reduces reviewer cognitive load
+
+3. **Intelligent Comment Processing**:
    - All comments are now presented in a unified, deduplicated format
    - Review comments and general comments are merged without duplication
    - Thread context and location information is preserved
 
-3. **Proactive Thread Management**:
+4. **Proactive Thread Management**:
    - Use bulk_resolve_threads for outdated discussions
    - Use reply_to_thread for continuing relevant conversations
    - Focus your review on current, actionable feedback
 
-This thread-aware approach ensures you see only relevant, current comments while maintaining conversation continuity.`;
+This thread-aware approach ensures you see only relevant, current comments while maintaining conversation continuity and providing clear file-by-file review guidance.`;
 }
 
 /**
