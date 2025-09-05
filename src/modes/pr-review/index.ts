@@ -7,7 +7,7 @@ import { configureGitAuth } from "../../github/operations/git-config";
 import { prepareMcpConfig } from "../../mcp/install-mcp-server";
 import { fetchGitHubData } from "../../github/data/fetcher";
 import { createPrompt } from "../../create-prompt";
-import { generatePrReviewPrompt } from "../../create-prompt/pr-review-prompt";
+import { generatePrReviewPromptThreadAware } from "../../create-prompt/pr-review-prompt";
 import {
   isEntityContext,
   isPullRequestReviewRequestedEvent,
@@ -151,6 +151,13 @@ export const prReviewMode: Mode = {
       "mcp__github_review__add_review_comment",
       "mcp__github_review__resolve_review_thread",
       "mcp__github_inline_comment__create_inline_comment",
+      // Thread-aware review tools
+      "mcp__github_review__get_file_comments",
+      "mcp__github_review__reply_to_thread",
+      "mcp__github_review__get_thread_status",
+      "mcp__github_review__bulk_resolve_threads",
+      "mcp__github_review__get_diff_context",
+      "mcp__github_review__get_review_stats",
     );
 
     // Add git commands when not using commit signing
@@ -213,13 +220,13 @@ export const prReviewMode: Mode = {
     };
   },
 
-  generatePrompt(
+  async generatePrompt(
     context: PreparedContext,
     githubData: FetchDataResult,
     useCommitSigning: boolean = false,
     _allowPrReviews: boolean = false,
-  ): string {
-    return generatePrReviewPrompt(
+  ): Promise<string> {
+    return await generatePrReviewPromptThreadAware(
       context,
       githubData,
       useCommitSigning,

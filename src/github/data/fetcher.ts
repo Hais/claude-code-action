@@ -18,6 +18,10 @@ import type {
 } from "../types";
 import type { CommentWithImages } from "../utils/image-downloader";
 import { downloadCommentImages } from "../utils/image-downloader";
+import {
+  findLastTrackingComment,
+  type ReviewMetadata,
+} from "../utils/metadata-parser";
 
 /**
  * Extracts the trigger timestamp from the GitHub webhook payload.
@@ -128,6 +132,11 @@ export type FetchDataResult = {
   reviewData: { nodes: GitHubReview[] } | null;
   imageUrlMap: Map<string, string>;
   triggerDisplayName?: string | null;
+  /** Metadata from Claude's last tracking comment for incremental reviews */
+  lastReviewMetadata?: {
+    comment: GitHubComment;
+    metadata: ReviewMetadata;
+  } | null;
 };
 
 export async function fetchGitHubData({
@@ -312,6 +321,15 @@ export async function fetchGitHubData({
     triggerDisplayName = await fetchUserDisplayName(octokits, triggerUsername);
   }
 
+  // Parse metadata from Claude's previous tracking comments for incremental reviews
+  let lastReviewMetadata: {
+    comment: GitHubComment;
+    metadata: ReviewMetadata;
+  } | null = null;
+  if (isPR && comments.length > 0) {
+    lastReviewMetadata = findLastTrackingComment(comments);
+  }
+
   return {
     contextData,
     comments,
@@ -320,6 +338,7 @@ export async function fetchGitHubData({
     reviewData,
     imageUrlMap,
     triggerDisplayName,
+    lastReviewMetadata,
   };
 }
 
