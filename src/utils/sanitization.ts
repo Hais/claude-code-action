@@ -136,16 +136,17 @@ export function validateGitHubThreadId(
     return false;
   }
 
-  // GitHub thread IDs are typically base64-encoded strings
-  // They usually start with specific prefixes like "PRRT_" for PR review threads
-  const base64Pattern = /^[A-Za-z0-9+/]+=*$/;
+  // GitHub thread IDs are GraphQL node IDs with prefixes and base64-encoded sections
+  // Format: PREFIX_base64EncodedString (e.g., "PRRT_kwDOGOHu5c5ZmzO9", "RT_kwDOExample123")
+  // Allow underscores, hyphens, and standard base64 characters
+  const githubNodeIdPattern = /^[A-Za-z0-9_+-/]+=*$/;
 
   // Basic length check (GitHub IDs are typically longer than 10 characters)
   if (threadId.length < 10 || threadId.length > 100) {
     return false;
   }
 
-  return base64Pattern.test(threadId);
+  return githubNodeIdPattern.test(threadId);
 }
 
 /**
