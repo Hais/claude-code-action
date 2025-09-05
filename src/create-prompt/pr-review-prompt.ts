@@ -16,28 +16,35 @@ import {
   shaExists,
 } from "../github/utils/commit-helpers";
 
+interface ReviewMetadata {
+  lastReviewedSha: string;
+  reviewDate: string;
+}
+
+interface FormattedGitHubData {
+  formattedContext: string;
+  formattedBody: string;
+  formattedComments: string;
+  formattedReviewComments: string;
+  formattedChangedFiles: string;
+  imagesInfo: string;
+}
+
+interface IncrementalReviewData {
+  incrementalInfo: string;
+  githubReviewInfo: string;
+}
+
 /**
- * Generates a specialized prompt for PR review mode that incorporates custom user prompts
- * into the review context while maintaining all the rich GitHub context.
+ * Formats GitHub data for the review prompt
  */
-export function generatePrReviewPrompt(
+function formatGitHubData(
   context: PreparedContext,
   githubData: FetchDataResult,
-  _useCommitSigning: boolean = false,
-  allowPrReviews: boolean = false,
-  customPrompt?: string,
-): string {
-  const {
-    contextData,
-    comments,
-    changedFilesWithSHA,
-    reviewData,
-    imageUrlMap,
-    lastReviewMetadata,
-  } = githubData;
+): FormattedGitHubData {
+  const { contextData, comments, changedFilesWithSHA, reviewData, imageUrlMap } = githubData;
   const { eventData } = context;
 
-  // Format all the GitHub context data
   const formattedContext = formatContext(contextData, eventData.isPR);
   const formattedComments = formatComments(comments, imageUrlMap);
   const formattedReviewComments = eventData.isPR
@@ -47,7 +54,6 @@ export function generatePrReviewPrompt(
     ? formatChangedFilesWithSHA(changedFilesWithSHA)
     : "";
 
-  // Handle images
   const hasImages = imageUrlMap && imageUrlMap.size > 0;
   const imagesInfo = hasImages
     ? `
@@ -61,109 +67,195 @@ Images have been downloaded from GitHub comments and saved to disk. Their file p
     ? formatBody(contextData.body, imageUrlMap)
     : "No description provided";
 
-  // Build review request context for PR reviews
-  let reviewRequestContext = "";
-  if (
-    eventData.eventName === "pull_request" &&
-    (eventData as any).eventAction === "review_requested" &&
-    eventData.isPR
-  ) {
-    const requestedReviewer = (eventData as any).requestedReviewer;
+  return {
+    formattedContext,
+    formattedBody,
+    formattedComments,
+    formattedReviewComments,
+    formattedChangedFiles,
+    imagesInfo,
+  };
+}
 
-    // Try to get incremental review data from Claude's previous tracking comment metadata
-    let incrementalReviewInfo = "";
-    if (lastReviewMetadata?.metadata) {
-      const metadata = lastReviewMetadata.metadata;
-      const lastSha = metadata.lastReviewedSha;
+/**
+ * Builds incremental review information from metadata
+ */
+function buildIncrementalReviewFromMetadata(
+  metadata: ReviewMetadata,
+): string {
+  const { lastReviewedSha: lastSha, reviewDate } = metadata;
+  
+  if (!shaExists(lastSha)) {
+    return `
+**Note:** Found previous review metadata (SHA: ${lastSha}, Date: ${new Date(reviewDate).toISOString()}), but the SHA no longer exists in this branch (likely due to force-push or rebase). Falling back to timestamp-based review context.`;
+  }
 
-      // Check if the SHA still exists (handles force-pushes)
-      const shaStillExists = shaExists(lastSha);
+  const commitsSinceSha = getCommitsSinceSha(lastSha);
+  const changedFilesSinceSha = getChangedFilesSinceSha(lastSha);
 
-      if (shaStillExists) {
-        // Get commits and changed files since the last reviewed SHA
-        const commitsSinceSha = getCommitsSinceSha(lastSha);
-        const changedFilesSinceSha = getChangedFilesSinceSha(lastSha);
+  const commitsSection = formatCommitsSection(commitsSinceSha);
+  const filesSection = formatFilesSection(changedFilesSinceSha);
 
-        incrementalReviewInfo = `
+  return `
 **Incremental Review Context (from tracking comment metadata):**
 - Last reviewed SHA: ${lastSha}
-- Last review date: ${new Date(metadata.reviewDate).toISOString()}
-- Commits since last review: ${commitsSinceSha.length}${
-          commitsSinceSha.length > 0
-            ? `\n${commitsSinceSha
-                .slice(0, 10)
-                .map((commit) => `  - ${commit.oid}: ${commit.message}`)
-                .join(
-                  "\n",
-                )}${commitsSinceSha.length > 10 ? `\n  ... and ${commitsSinceSha.length - 10} more commits` : ""}`
-            : ""
-        }
-- Files changed since last review: ${changedFilesSinceSha.length}${
-          changedFilesSinceSha.length > 0 && changedFilesSinceSha.length <= 15
-            ? `\n${changedFilesSinceSha.map((file) => `  - ${file}`).join("\n")}`
-            : changedFilesSinceSha.length > 15
-              ? `\n  ${changedFilesSinceSha
-                  .slice(0, 15)
-                  .map((file) => `- ${file}`)
-                  .join(
-                    ", ",
-                  )} and ${changedFilesSinceSha.length - 15} more files`
-              : ""
-        }`;
-      } else {
-        incrementalReviewInfo = `
-**Note:** Found previous review metadata (SHA: ${lastSha}, Date: ${new Date(metadata.reviewDate).toISOString()}), but the SHA no longer exists in this branch (likely due to force-push or rebase). Falling back to timestamp-based review context.`;
-      }
-    }
+- Last review date: ${new Date(reviewDate).toISOString()}
+- Commits since last review: ${commitsSinceSha.length}${commitsSection}
+- Files changed since last review: ${changedFilesSinceSha.length}${filesSection}`;
+}
 
-    // Fallback to GitHub's native review API data if no metadata or SHA doesn't exist
-    const lastReview = requestedReviewer
-      ? findLastReviewFromUser(reviewData, requestedReviewer)
-      : null;
-    const commitsSinceReview =
-      lastReview && contextData
-        ? getCommitsSinceReview(
-            (contextData as any).commits?.nodes || [],
-            lastReview.submittedAt,
-          )
-        : [];
+/**
+ * Formats commits section for incremental review
+ */
+function formatCommitsSection(commits: any[]): string {
+  if (commits.length === 0) return "";
+  
+  const maxCommitsToShow = 10;
+  const commitsList = commits
+    .slice(0, maxCommitsToShow)
+    .map((commit) => `  - ${commit.oid}: ${commit.message}`)
+    .join("\n");
+  
+  const moreCommits = commits.length > maxCommitsToShow
+    ? `\n  ... and ${commits.length - maxCommitsToShow} more commits`
+    : "";
+  
+  return `\n${commitsList}${moreCommits}`;
+}
 
-    const githubReviewInfo = lastReview
-      ? `**GitHub Review History:**
-Your last review was submitted on ${new Date(lastReview.submittedAt).toISOString()} at ${new Date(lastReview.submittedAt).toLocaleTimeString()}.
+/**
+ * Formats files section for incremental review
+ */
+function formatFilesSection(files: string[]): string {
+  if (files.length === 0) return "";
+  
+  if (files.length <= 15) {
+    return `\n${files.map((file) => `  - ${file}`).join("\n")}`;
+  }
+  
+  const filesList = files
+    .slice(0, 15)
+    .map((file) => `- ${file}`)
+    .join(", ");
+  
+  return `\n  ${filesList} and ${files.length - 15} more files`;
+}
+
+/**
+ * Builds GitHub review information from API data
+ */
+function buildGitHubReviewInfo(
+  lastReview: any,
+  commitsSinceReview: any[],
+): string {
+  if (!lastReview) {
+    return "This appears to be your first review of this pull request.";
+  }
+
+  const reviewDate = new Date(lastReview.submittedAt);
+  const commitsList = formatCommitsSinceReview(commitsSinceReview);
+
+  return `**GitHub Review History:**
+Your last review was submitted on ${reviewDate.toISOString()} at ${reviewDate.toLocaleTimeString()}.
 Review ID: ${lastReview.id}
-${
-  commitsSinceReview.length > 0
-    ? `\nCommits since your last review:${commitsSinceReview
-        .slice(0, 10)
-        .map(
-          (commit) =>
-            `\n- ${commit.oid.substring(0, 8)}: ${commit.message.split("\n")[0]}`,
-        )
-        .join(
-          "",
-        )}${commitsSinceReview.length > 10 ? `\n... and ${commitsSinceReview.length - 10} more commits` : ""}`
-    : "\nNo new commits since your last review."
-}`
-      : "This appears to be your first review of this pull request.";
+${commitsList}`;
+}
 
-    reviewRequestContext = `<review_request_context>
+/**
+ * Formats commits since review for display
+ */
+function formatCommitsSinceReview(commits: any[]): string {
+  if (commits.length === 0) {
+    return "\nNo new commits since your last review.";
+  }
+
+  const maxCommitsToShow = 10;
+  const commitsList = commits
+    .slice(0, maxCommitsToShow)
+    .map((commit) => `\n- ${commit.oid.substring(0, 8)}: ${commit.message.split("\n")[0]}`)
+    .join("");
+  
+  const moreCommits = commits.length > maxCommitsToShow
+    ? `\n... and ${commits.length - maxCommitsToShow} more commits`
+    : "";
+
+  return `\nCommits since your last review:${commitsList}${moreCommits}`;
+}
+
+/**
+ * Gets incremental review data for review requests
+ */
+function getIncrementalReviewData(
+  eventData: any,
+  githubData: FetchDataResult,
+): IncrementalReviewData {
+  const { contextData, reviewData, lastReviewMetadata } = githubData;
+  const requestedReviewer = eventData.requestedReviewer;
+
+  // Try metadata-based incremental review first
+  let incrementalInfo = "";
+  if (lastReviewMetadata?.metadata) {
+    incrementalInfo = buildIncrementalReviewFromMetadata(lastReviewMetadata.metadata);
+  }
+
+  // Get GitHub API-based review data
+  const lastReview = requestedReviewer
+    ? findLastReviewFromUser(reviewData, requestedReviewer)
+    : null;
+  
+  const commitsSinceReview = lastReview && contextData
+    ? getCommitsSinceReview(
+        (contextData as any).commits?.nodes || [],
+        lastReview.submittedAt,
+      )
+    : [];
+  
+  const githubReviewInfo = buildGitHubReviewInfo(lastReview, commitsSinceReview);
+
+  return { incrementalInfo, githubReviewInfo };
+}
+
+/**
+ * Builds the review request context section
+ */
+function buildReviewRequestContext(
+  context: PreparedContext,
+  githubData: FetchDataResult,
+): string {
+  const { eventData } = context;
+  
+  if (
+    eventData.eventName !== "pull_request" ||
+    (eventData as any).eventAction !== "review_requested" ||
+    !eventData.isPR
+  ) {
+    return "";
+  }
+
+  const requestedReviewer = (eventData as any).requestedReviewer;
+  const { incrementalInfo, githubReviewInfo } = getIncrementalReviewData(eventData, githubData);
+
+  return `<review_request_context>
 You have been requested to review this pull request.
 ${requestedReviewer ? `The reviewer trigger matched: ${requestedReviewer}` : ""}
 
-${incrementalReviewInfo}
+${incrementalInfo}
 
-${incrementalReviewInfo ? githubReviewInfo : githubReviewInfo}
+${incrementalInfo ? githubReviewInfo : githubReviewInfo}
 
 IMPORTANT: For incremental reviews, embed review metadata in your tracking comment as HTML comment for future reference:
 <!-- pr-review-metadata-v1: {"lastReviewedSha": "current-head-sha", "reviewDate": "iso-timestamp"} -->
 This helps maintain conversational continuity across force-pushes and rebases.
 </review_request_context>`;
-  }
+}
 
-  // Custom prompt injection section
-  const customPromptSection = customPrompt
-    ? `
+/**
+ * Builds custom prompt section
+ */
+function buildCustomPromptSection(customPrompt?: string): string {
+  if (!customPrompt) return "";
+
+  return `
 
 <custom_review_instructions>
 You have been provided with specific instructions for this review:
@@ -171,12 +263,14 @@ You have been provided with specific instructions for this review:
 ${sanitizeContent(customPrompt)}
 
 Please follow these custom instructions while conducting your review, in addition to the standard review practices outlined below.
-</custom_review_instructions>`
-    : "";
+</custom_review_instructions>`;
+}
 
-  // Build the review tools information
-  const reviewToolsInfo = allowPrReviews
-    ? `<review_tool_info>
+/**
+ * Builds PR review tools information
+ */
+function buildPrReviewToolsInfo(): string {
+  return `<review_tool_info>
 IMPORTANT: You have been provided with TWO DISTINCT types of tools:
 
 **PR Review Tools:**
@@ -224,7 +318,7 @@ Tool usage example for mcp__github_inline_comment__create_inline_comment with co
 {
   "path": "src/utils.js",
   "line": 15,
-  "body": "🔴 **Blocker [Correctness]**: This will throw a TypeError when user is null.\\n\\n\`\`\`suggestion\\nreturn user?.profile?.name || 'Anonymous';\\n\`\`\`"
+  "body": "🔴 **Blocker [Correctness]**: This will throw a TypeError when user is null.\\n\\n\`\`\`suggestion\\nreturn user?.profile?.name || 'Anonymous';\`\`\`"
 }
 
 Tool usage example for conversational continuity (follow-up review):
@@ -280,8 +374,14 @@ When to update your tracking comment:
 Note: Inline comments created with create_inline_comment appear immediately on the diff view, making them highly visible and actionable for developers. The formal review submission with submit_pr_review provides your overall assessment.
 
 Use COMMENT for general feedback, REQUEST_CHANGES to request changes, or APPROVE to approve the PR.
-</review_tool_info>`
-    : `<comment_tool_info>
+</review_tool_info>`;
+}
+
+/**
+ * Builds comment tools information for non-PR review mode
+ */
+function buildCommentToolsInfo(): string {
+  return `<comment_tool_info>
 IMPORTANT: You have been provided with the mcp__github_comment__update_claude_comment tool to update your comment. This tool automatically handles both issue and PR comments.
 
 Tool usage example for mcp__github_comment__update_claude_comment:
@@ -290,9 +390,153 @@ Tool usage example for mcp__github_comment__update_claude_comment:
 }
 Only the body parameter is required - the tool automatically knows which comment to update.
 </comment_tool_info>`;
+}
+
+/**
+ * Builds review process instructions
+ */
+function buildReviewProcessInstructions(
+  allowPrReviews: boolean,
+  customPrompt?: string,
+): string {
+  const trackingCommentInstructions = allowPrReviews
+    ? "**Direct Review Flow**:\n   - Begin analysis immediately without tracking comment setup\n   - Use formal PR review tools for all feedback and status tracking\n   - GitHub's native review interface provides built-in progress tracking\n\n2. **Initial Analysis**:"
+    : `**Create a Dynamic Todo List**:
+   - Use your tracking comment to maintain a task checklist ONLY (no review content)
+   - Format todos as a checklist (- [ ] for incomplete, - [x] for complete)
+   - Update ONLY the checkbox status using mcp__github_comment__update_claude_comment
+   - **Base checklist (always include):**
+     - [ ] Initial Analysis - Understanding PR purpose and scope
+     - [ ] Code Review - Examining changes for quality and issues
+     - [ ] Submit Formal Review - Submitting GitHub review decision
+   - **Add contextual tasks based on file patterns:**
+     - If dependencies changed (package.json, go.mod, requirements.txt): Add "[ ] Dependency Review - Security and compatibility check"
+     - If database files (.sql, migrations): Add "[ ] Migration Safety - Forward/backward compatibility review"
+     - If public API changes (exported functions, endpoints): Add "[ ] API Compatibility - Breaking changes and documentation review"
+     - If CI/workflow files: Add "[ ] CI Security - Secret handling and permissions review"
+     - If performance-critical paths: Add "[ ] Performance Review - Checking for performance implications"
+     - If authentication/authorization code: Add "[ ] Security Review - Authentication and access control check"
+     - If test files substantial: Add "[ ] Test Coverage - Verify adequate test coverage for changes"
+   - CRITICAL: This tracking comment is ONLY for checkboxes - ALL review feedback goes in the formal review
+
+2. **Initial Analysis**:`;
+
+  const feedbackInstructions = allowPrReviews
+    ? `- Use mcp__github_inline_comment__create_inline_comment for specific line-by-line feedback on the code
+   - Use mcp__github_review__resolve_review_thread to resolve outdated conversations from previous reviews
+   - Use mcp__github_review__submit_pr_review to submit your formal GitHub review with:
+     - APPROVE: If the changes look good with no significant issues
+     - REQUEST_CHANGES: If there are important issues that need to be addressed  
+     - COMMENT: For general feedback or questions without blocking approval
+   - All feedback and progress tracking handled through GitHub's native review system`
+    : `- Update your tracking comment with review feedback using mcp__github_comment__update_claude_comment
+   - Provide both positive feedback and constructive criticism
+   - Be specific about issues and suggest solutions where possible`;
+
+  const finalStepsInstructions = allowPrReviews
+    ? `- Submit your formal review using mcp__github_review__submit_pr_review with your decision and ALL feedback
+   - Include comprehensive assessment in the formal review body
+   - Use inline comments for specific code feedback
+   - No separate tracking comment management required`
+    : `- Update your tracking comment with final review feedback using mcp__github_comment__update_claude_comment
+   - Ensure all review tasks show as complete in your checklist`;
+
+  const structureInstructions = allowPrReviews
+    ? `- **Structure your formal review with these sections when applicable:**
+     - **Summary**: Brief overview of changes and overall assessment
+     - **What's Solid**: Specific positive reinforcement (ESSENTIAL for mentorship)
+     - **Key Issues**: Organized by severity (🔴 Blockers first, then 🟠 High, etc.)
+     - **Risk Assessment** (if high-impact changes): Potential downstream effects, rollback considerations
+     - **Test Plan Verification** (if significant logic changes): Coverage gaps, edge cases
+     - **Architecture Notes** (if structural changes): Design patterns, future maintainability
+   - Only include strategic sections when relevant to avoid formality for simple changes`
+    : `- Structure your tracking comment with clear sections when reviewing complex PRs`;
+
+  return `Your task is to conduct a thorough pull request review. Here's how to approach it:
+
+## Review Process:
+
+1. ${trackingCommentInstructions} 
+   - Read the PR description and understand the purpose of the changes
+   - Review the changed files to understand the scope of modifications
+   - Note any existing comments or previous review feedback${allowPrReviews ? "" : "\n   - Mark this task complete in your tracking comment: - [x] Initial Analysis"}
+
+3. **Code Review**:
+   - Examine each changed file for code quality, logic, and potential issues
+   - Look for bugs, security vulnerabilities, performance issues, or style problems
+   - Check for proper error handling, edge cases, and test coverage
+   - Verify that the implementation matches the PR description${allowPrReviews ? "" : "\n   - Update your tracking comment as you complete each aspect"}
+
+4. **Provide Feedback**:
+   ${feedbackInstructions}
+
+5. **Review Guidelines**:
+   - Be constructive and respectful in your feedback
+   - Explain the "why" behind your suggestions with specific benefits
+   - Consider the broader impact of changes on the codebase
+   - Balance thoroughness with practicality - focus on evidence-based concerns
+   - **ESSENTIAL: Include "What's Solid" section with specific positive reinforcement:**
+     - Acknowledge good patterns: "Excellent use of Promise.all here for parallel operations - much more efficient"
+     - Praise good tests: "The edge case tests for this function are fantastic and will prevent regressions"
+     - Recognize cleanups: "This refactoring greatly improves readability and maintainability"
+     - Highlight security improvements: "Good catch adding input validation here"${allowPrReviews ? "" : "\n   - Keep your tracking comment updated with checkbox status only (no review content)"}
+
+6. **Strategic Review Sections (Context-Aware)**:
+   ${structureInstructions}
+
+7. **Final Steps**:
+   ${finalStepsInstructions}
+${allowPrReviews ? "" : "   - Put your overall assessment in the formal review (if available) or tracking comment (if not)"}${
+    customPrompt
+      ? `\n   - Ensure your review addresses the custom instructions provided above`
+      : ""
+  }
+
+Remember: Your goal is to help improve code quality while being helpful and collaborative with the development team.`;
+}
+
+/**
+ * Generates a specialized prompt for PR review mode that incorporates custom user prompts
+ * into the review context while maintaining all the rich GitHub context.
+ */
+export function generatePrReviewPrompt(
+  context: PreparedContext,
+  githubData: FetchDataResult,
+  _useCommitSigning: boolean = false,
+  allowPrReviews: boolean = false,
+  customPrompt?: string,
+): string {
+  const { eventData } = context;
+
+  // Format GitHub data
+  const {
+    formattedContext,
+    formattedBody,
+    formattedComments,
+    formattedReviewComments,
+    formattedChangedFiles,
+    imagesInfo,
+  } = formatGitHubData(context, githubData);
+
+  // Build review request context
+  const reviewRequestContext = buildReviewRequestContext(context, githubData);
+
+  // Build custom prompt section
+  const customPromptSection = buildCustomPromptSection(customPrompt);
+
+  // Build review tools information
+  const reviewToolsInfo = allowPrReviews
+    ? buildPrReviewToolsInfo()
+    : buildCommentToolsInfo();
+
+  // Build review process instructions
+  const reviewProcessInstructions = buildReviewProcessInstructions(
+    allowPrReviews,
+    customPrompt,
+  );
 
   // Generate the complete prompt
-  let promptContent = `${getSystemPromptPrefix()} specialized in conducting thorough and helpful pull request reviews. You have been requested to review this pull request. Think carefully as you analyze the code changes and provide constructive feedback.
+  const promptContent = `${getSystemPromptPrefix()} specialized in conducting thorough and helpful pull request reviews. You have been requested to review this pull request. Think carefully as you analyze the code changes and provide constructive feedback.
 
 <formatted_context>
 ${formattedContext}
@@ -323,78 +567,7 @@ ${eventData.isPR && "prNumber" in eventData ? `<pr_number>${eventData.prNumber}<
 
 ${reviewToolsInfo}
 
-Your task is to conduct a thorough pull request review. Here's how to approach it:
-
-## Review Process:
-
-1. ${allowPrReviews ? "**Direct Review Flow**:\n   - Begin analysis immediately without tracking comment setup\n   - Use formal PR review tools for all feedback and status tracking\n   - GitHub's native review interface provides built-in progress tracking\n\n2. **Initial Analysis**:" : '**Create a Dynamic Todo List**:\n   - Use your tracking comment to maintain a task checklist ONLY (no review content)\n   - Format todos as a checklist (- [ ] for incomplete, - [x] for complete)\n   - Update ONLY the checkbox status using mcp__github_comment__update_claude_comment\n   - **Base checklist (always include):**\n     - [ ] Initial Analysis - Understanding PR purpose and scope\n     - [ ] Code Review - Examining changes for quality and issues\n     - [ ] Submit Formal Review - Submitting GitHub review decision\n   - **Add contextual tasks based on file patterns:**\n     - If dependencies changed (package.json, go.mod, requirements.txt): Add "[ ] Dependency Review - Security and compatibility check"\n     - If database files (.sql, migrations): Add "[ ] Migration Safety - Forward/backward compatibility review"\n     - If public API changes (exported functions, endpoints): Add "[ ] API Compatibility - Breaking changes and documentation review"\n     - If CI/workflow files: Add "[ ] CI Security - Secret handling and permissions review"\n     - If performance-critical paths: Add "[ ] Performance Review - Checking for performance implications"\n     - If authentication/authorization code: Add "[ ] Security Review - Authentication and access control check"\n     - If test files substantial: Add "[ ] Test Coverage - Verify adequate test coverage for changes"\n   - CRITICAL: This tracking comment is ONLY for checkboxes - ALL review feedback goes in the formal review\n\n2. **Initial Analysis**:'} 
-   - Read the PR description and understand the purpose of the changes
-   - Review the changed files to understand the scope of modifications
-   - Note any existing comments or previous review feedback${allowPrReviews ? "" : "\n   - Mark this task complete in your tracking comment: - [x] Initial Analysis"}
-
-3. **Code Review**:
-   - Examine each changed file for code quality, logic, and potential issues
-   - Look for bugs, security vulnerabilities, performance issues, or style problems
-   - Check for proper error handling, edge cases, and test coverage
-   - Verify that the implementation matches the PR description${allowPrReviews ? "" : "\n   - Update your tracking comment as you complete each aspect"}
-
-4. **Provide Feedback**:
-   ${
-     allowPrReviews
-       ? `- Use mcp__github_inline_comment__create_inline_comment for specific line-by-line feedback on the code
-   - Use mcp__github_review__resolve_review_thread to resolve outdated conversations from previous reviews
-   - Use mcp__github_review__submit_pr_review to submit your formal GitHub review with:
-     - APPROVE: If the changes look good with no significant issues
-     - REQUEST_CHANGES: If there are important issues that need to be addressed  
-     - COMMENT: For general feedback or questions without blocking approval
-   - All feedback and progress tracking handled through GitHub's native review system`
-       : `- Update your tracking comment with review feedback using mcp__github_comment__update_claude_comment
-   - Provide both positive feedback and constructive criticism
-   - Be specific about issues and suggest solutions where possible`
-   }
-
-5. **Review Guidelines**:
-   - Be constructive and respectful in your feedback
-   - Explain the "why" behind your suggestions with specific benefits
-   - Consider the broader impact of changes on the codebase
-   - Balance thoroughness with practicality - focus on evidence-based concerns
-   - **ESSENTIAL: Include "What's Solid" section with specific positive reinforcement:**
-     - Acknowledge good patterns: "Excellent use of Promise.all here for parallel operations - much more efficient"
-     - Praise good tests: "The edge case tests for this function are fantastic and will prevent regressions"
-     - Recognize cleanups: "This refactoring greatly improves readability and maintainability"
-     - Highlight security improvements: "Good catch adding input validation here"${allowPrReviews ? "" : "\n   - Keep your tracking comment updated with checkbox status only (no review content)"}
-
-6. **Strategic Review Sections (Context-Aware)**:
-   ${
-     allowPrReviews
-       ? `- **Structure your formal review with these sections when applicable:**
-     - **Summary**: Brief overview of changes and overall assessment
-     - **What's Solid**: Specific positive reinforcement (ESSENTIAL for mentorship)
-     - **Key Issues**: Organized by severity (🔴 Blockers first, then 🟠 High, etc.)
-     - **Risk Assessment** (if high-impact changes): Potential downstream effects, rollback considerations
-     - **Test Plan Verification** (if significant logic changes): Coverage gaps, edge cases
-     - **Architecture Notes** (if structural changes): Design patterns, future maintainability
-   - Only include strategic sections when relevant to avoid formality for simple changes`
-       : `- Structure your tracking comment with clear sections when reviewing complex PRs`
-   }
-
-7. **Final Steps**:
-   ${
-     allowPrReviews
-       ? `- Submit your formal review using mcp__github_review__submit_pr_review with your decision and ALL feedback
-   - Include comprehensive assessment in the formal review body
-   - Use inline comments for specific code feedback
-   - No separate tracking comment management required`
-       : `- Update your tracking comment with final review feedback using mcp__github_comment__update_claude_comment
-   - Ensure all review tasks show as complete in your checklist`
-   }
-${allowPrReviews ? "" : "   - Put your overall assessment in the formal review (if available) or tracking comment (if not)"}${
-    customPrompt
-      ? `\n   - Ensure your review addresses the custom instructions provided above`
-      : ""
-  }
-
-Remember: Your goal is to help improve code quality while being helpful and collaborative with the development team.`;
+${reviewProcessInstructions}`;
 
   return promptContent;
 }
