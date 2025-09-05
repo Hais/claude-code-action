@@ -93,10 +93,11 @@ async function formatGitHubDataThreadAware(
   const { eventData } = context;
 
   // Execute three-phase thread-aware processing
-  const threadAnalysis = await analyzeExistingThreads(context);
+  const threadAnalysis = await analyzeExistingThreads(context, githubData);
   const deduplicatedComments = await getDeduplicatedComments(
     githubData,
     threadAnalysis,
+    context,
   );
   const threadActions = await planThreadActions(
     threadAnalysis,
@@ -300,25 +301,187 @@ function formatCommitsSinceReview(commits: any[]): string {
 }
 
 /**
- * Phase 1: Analyze existing threads for relevance using MCP tools
+ * Phase 1: Analyze existing threads for relevance by reconstructing from GitHub data
  */
 async function analyzeExistingThreads(
   _context: PreparedContext,
+  githubData?: FetchDataResult,
 ): Promise<ThreadAnalysis> {
-  // For now, return empty analysis to maintain compatibility
-  // In production, this would integrate with the MCP tools when available
-  // The thread-aware functionality is designed to gracefully fall back
-  // to standard processing when MCP tools aren't accessible
-  return {
-    validThreads: [],
-    outdatedThreads: [],
-    stats: {
-      total: 0,
-      resolved: 0,
-      unresolved: 0,
-      outdated: 0,
-    },
-  };
+  try {
+    // If no GitHub data provided, return empty analysis
+    if (!githubData?.reviewData?.nodes) {
+      return {
+        validThreads: [],
+        outdatedThreads: [],
+        stats: { total: 0, resolved: 0, unresolved: 0, outdated: 0 },
+      };
+    }
+
+    // Reconstruct threads from review comments
+    const threadMap = new Map<string, {
+      threadId: string;
+      isResolved: boolean;
+      file: string;
+      line: number | null;
+      isRelevant: boolean;
+      comments: Array<{
+        id: string;
+        databaseId: string;
+        body: string;
+        author: string;
+        createdAt: string;
+      }>;
+      reviewStates: string[];
+    }>();
+
+    // Process all review comments to reconstruct threads
+    for (const review of githubData.reviewData.nodes) {
+      const reviewState = review.state;
+      
+      for (const comment of review.comments.nodes) {
+        // Create thread identifier from file path and line number
+        const threadKey = `${comment.path}:${comment.line || 'null'}`;
+        
+        if (!threadMap.has(threadKey)) {
+          threadMap.set(threadKey, {
+            threadId: threadKey,
+            isResolved: false, // Will be updated based on review states
+            file: comment.path,
+            line: comment.line,
+            isRelevant: true, // Will be analyzed based on current PR state
+            comments: [],
+            reviewStates: [],
+          });
+        }
+
+        const thread = threadMap.get(threadKey)!;
+        
+        // Add comment to thread
+        thread.comments.push({
+          id: comment.id,
+          databaseId: comment.databaseId.toString(),
+          body: comment.body,
+          author: comment.author.login,
+          createdAt: comment.createdAt,
+        });
+
+        // Track review states for resolution analysis
+        if (!thread.reviewStates.includes(reviewState)) {
+          thread.reviewStates.push(reviewState);
+        }
+      }
+    }
+
+    // Analyze threads for resolution and relevance
+    const threads = Array.from(threadMap.values());
+    const changedFiles = githubData.changedFiles || [];
+    
+    for (const thread of threads) {
+      // Determine if thread is resolved based on review states
+      thread.isResolved = thread.reviewStates.includes('APPROVED') && 
+                         !thread.reviewStates.includes('CHANGES_REQUESTED');
+      
+      // Determine relevance - thread is relevant if:
+      // 1. The file is still being changed in this PR, OR
+      // 2. The file exists in the current PR (even if not changed)
+      const fileStillExists = changedFiles.some(f => f.path === thread.file) ||
+                             thread.file.length > 0; // Basic existence check
+      
+      thread.isRelevant = fileStillExists;
+      
+      // Mark as outdated if file was deleted
+      if (!thread.isRelevant) {
+        thread.isRelevant = false;
+      }
+    }
+
+    // Separate valid and outdated threads
+    const validThreads = threads.filter(t => !t.isResolved && t.isRelevant);
+    const outdatedThreads = threads
+      .filter(t => !t.isRelevant)
+      .map(t => ({
+        threadId: t.threadId,
+        reason: `Thread on ${t.file}${t.line ? `:${t.line}` : ''} is no longer relevant`,
+      }));
+
+    const stats = {
+      total: threads.length,
+      resolved: threads.filter(t => t.isResolved).length,
+      unresolved: threads.filter(t => !t.isResolved).length,
+      outdated: outdatedThreads.length,
+    };
+
+    console.log(`Thread analysis: ${stats.total} total, ${stats.unresolved} unresolved, ${stats.resolved} resolved, ${stats.outdated} outdated`);
+
+    return {
+      validThreads,
+      outdatedThreads,
+      stats,
+    };
+  } catch (error) {
+    console.warn("Thread analysis failed, falling back to basic mode:", error);
+    return {
+      validThreads: [],
+      outdatedThreads: [],
+      stats: { total: 0, resolved: 0, unresolved: 0, outdated: 0 },
+    };
+  }
+}
+
+/**
+ * Helper function to build thread ID mapping from review comments
+ * This creates a mapping between comment database IDs and their thread IDs
+ * based on file path and line number correlation
+ */
+async function buildThreadCommentMapping(
+  _context: PreparedContext,
+  githubData?: FetchDataResult,
+): Promise<Map<string, string>> {
+  const threadCommentMap = new Map<string, string>();
+
+  if (!githubData?.reviewData?.nodes) {
+    console.warn("No review data available for thread comment mapping");
+    return threadCommentMap;
+  }
+
+  try {
+    // Build mapping by reconstructing threads from review comments
+    // This mirrors the logic in analyzeExistingThreads to ensure consistency
+    const threadMap = new Map<string, string>(); // threadKey -> threadId
+
+    for (const review of githubData.reviewData.nodes) {
+      for (const comment of review.comments.nodes) {
+        if (!comment.databaseId || !comment.path) {
+          continue; // Skip comments without essential identifiers
+        }
+
+        // Create consistent thread key (same as in analyzeExistingThreads)
+        const threadKey = `${comment.path}:${comment.line || 'null'}`;
+        
+        // Use the first comment's ID as the thread ID (consistent with GitHub's approach)
+        if (!threadMap.has(threadKey)) {
+          // Generate deterministic thread ID from first comment in thread
+          const threadId = `thread_${comment.databaseId}`;
+          threadMap.set(threadKey, threadId);
+        }
+
+        // Map this comment's database ID to its thread ID
+        const threadId = threadMap.get(threadKey);
+        if (threadId) {
+          threadCommentMap.set(comment.databaseId.toString(), threadId);
+        }
+      }
+    }
+
+    console.log(`Built thread comment mapping: ${threadCommentMap.size} comments mapped to threads`);
+    return threadCommentMap;
+  } catch (error) {
+    console.warn(
+      "Failed to build thread comment mapping, proceeding without thread correlation:",
+      error,
+    );
+    return new Map();
+  }
 }
 
 /**
@@ -327,9 +490,15 @@ async function analyzeExistingThreads(
 async function getDeduplicatedComments(
   githubData: FetchDataResult,
   threadAnalysis: ThreadAnalysis,
+  context?: PreparedContext,
 ): Promise<DeduplicatedComment[]> {
   const commentMap = new Map<string, DeduplicatedComment>();
   const { comments, reviewData } = githubData;
+
+  // Build mapping from comment database IDs to thread IDs
+  const threadCommentMap = context
+    ? await buildThreadCommentMapping(context, githubData)
+    : new Map<string, string>();
 
   // Process general comments
   comments?.forEach((comment) => {
@@ -339,6 +508,7 @@ async function getDeduplicatedComments(
         body: comment.body,
         author: comment.author.login,
         createdAt: comment.createdAt,
+        threadId: threadCommentMap.get(comment.databaseId),
         isReviewComment: false,
       });
     }
@@ -357,6 +527,7 @@ async function getDeduplicatedComments(
             createdAt: comment.createdAt,
             file: comment.path,
             line: comment.line,
+            threadId: threadCommentMap.get(comment.databaseId), // Now properly assigned!
             isReviewComment: true,
           });
         }
