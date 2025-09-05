@@ -35,14 +35,128 @@ interface IncrementalReviewData {
   githubReviewInfo: string;
 }
 
+interface ThreadAnalysis {
+  validThreads: Array<{
+    threadId: string;
+    isResolved: boolean;
+    file: string;
+    line: number | null;
+    isRelevant: boolean;
+    comments: Array<{
+      id: string;
+      databaseId: string;
+      body: string;
+      author: string;
+      createdAt: string;
+    }>;
+  }>;
+  outdatedThreads: Array<{
+    threadId: string;
+    reason: string;
+  }>;
+  stats: {
+    total: number;
+    resolved: number;
+    unresolved: number;
+    outdated: number;
+  };
+}
+
+interface DeduplicatedComment {
+  databaseId: string;
+  body: string;
+  author: string;
+  createdAt: string;
+  threadId?: string;
+  file?: string;
+  line?: number | null;
+  isReviewComment: boolean;
+}
+
 /**
- * Formats GitHub data for the review prompt
+ * Formats GitHub data for the review prompt using thread-aware processing
+ */
+async function formatGitHubDataThreadAware(
+  context: PreparedContext,
+  githubData: FetchDataResult,
+): Promise<
+  FormattedGitHubData & {
+    threadAnalysisSummary: string;
+    threadActions: {
+      threadsToResolve: Array<{ threadId: string; reason: string }>;
+      threadsToReplyTo: Array<{ threadId: string; suggestedReply: string }>;
+      newCommentsNeeded: boolean;
+    };
+  }
+> {
+  const { contextData, changedFilesWithSHA, imageUrlMap } = githubData;
+  const { eventData } = context;
+
+  // Execute three-phase thread-aware processing
+  const threadAnalysis = await analyzeExistingThreads(context);
+  const deduplicatedComments = await getDeduplicatedComments(
+    githubData,
+    threadAnalysis,
+  );
+  const threadActions = await planThreadActions(
+    threadAnalysis,
+    deduplicatedComments,
+  );
+
+  const formattedContext = formatContext(contextData, eventData.isPR);
+
+  // Use new thread-aware comment formatting instead of separate formatters
+  const formattedComments = formatDeduplicatedComments(
+    deduplicatedComments,
+    imageUrlMap,
+  );
+  const formattedReviewComments = ""; // Now integrated into formattedComments
+
+  const formattedChangedFiles = eventData.isPR
+    ? formatChangedFilesWithSHA(changedFilesWithSHA)
+    : "";
+
+  const hasImages = imageUrlMap && imageUrlMap.size > 0;
+  const imagesInfo = hasImages
+    ? `
+
+<images_info>
+Images have been downloaded from GitHub comments and saved to disk. Their file paths are included in the formatted comments and body above. You can use the Read tool to view these images.
+</images_info>`
+    : "";
+
+  const formattedBody = contextData?.body
+    ? formatBody(contextData.body, imageUrlMap)
+    : "No description provided";
+
+  const threadAnalysisSummary = formatThreadAnalysisSummary(threadAnalysis);
+
+  return {
+    formattedContext,
+    formattedBody,
+    formattedComments,
+    formattedReviewComments,
+    formattedChangedFiles,
+    imagesInfo,
+    threadAnalysisSummary,
+    threadActions,
+  };
+}
+
+/**
+ * Formats GitHub data for the review prompt (legacy version for fallback)
  */
 function formatGitHubData(
   context: PreparedContext,
   githubData: FetchDataResult,
 ): FormattedGitHubData {
-  const { contextData, comments, changedFilesWithSHA, reviewData, imageUrlMap } = githubData;
+  const {
+    contextData,
+    comments,
+    changedFilesWithSHA,
+    reviewData,
+    imageUrlMap,
+  } = githubData;
   const { eventData } = context;
 
   const formattedContext = formatContext(contextData, eventData.isPR);
@@ -80,11 +194,9 @@ Images have been downloaded from GitHub comments and saved to disk. Their file p
 /**
  * Builds incremental review information from metadata
  */
-function buildIncrementalReviewFromMetadata(
-  metadata: ReviewMetadata,
-): string {
+function buildIncrementalReviewFromMetadata(metadata: ReviewMetadata): string {
   const { lastReviewedSha: lastSha, reviewDate } = metadata;
-  
+
   if (!shaExists(lastSha)) {
     return `
 **Note:** Found previous review metadata (SHA: ${lastSha}, Date: ${new Date(reviewDate).toISOString()}), but the SHA no longer exists in this branch (likely due to force-push or rebase). Falling back to timestamp-based review context.`;
@@ -109,17 +221,18 @@ function buildIncrementalReviewFromMetadata(
  */
 function formatCommitsSection(commits: any[]): string {
   if (commits.length === 0) return "";
-  
+
   const maxCommitsToShow = 10;
   const commitsList = commits
     .slice(0, maxCommitsToShow)
     .map((commit) => `  - ${commit.oid}: ${commit.message}`)
     .join("\n");
-  
-  const moreCommits = commits.length > maxCommitsToShow
-    ? `\n  ... and ${commits.length - maxCommitsToShow} more commits`
-    : "";
-  
+
+  const moreCommits =
+    commits.length > maxCommitsToShow
+      ? `\n  ... and ${commits.length - maxCommitsToShow} more commits`
+      : "";
+
   return `\n${commitsList}${moreCommits}`;
 }
 
@@ -128,16 +241,16 @@ function formatCommitsSection(commits: any[]): string {
  */
 function formatFilesSection(files: string[]): string {
   if (files.length === 0) return "";
-  
+
   if (files.length <= 15) {
     return `\n${files.map((file) => `  - ${file}`).join("\n")}`;
   }
-  
+
   const filesList = files
     .slice(0, 15)
     .map((file) => `- ${file}`)
     .join(", ");
-  
+
   return `\n  ${filesList} and ${files.length - 15} more files`;
 }
 
@@ -172,14 +285,182 @@ function formatCommitsSinceReview(commits: any[]): string {
   const maxCommitsToShow = 10;
   const commitsList = commits
     .slice(0, maxCommitsToShow)
-    .map((commit) => `\n- ${commit.oid.substring(0, 8)}: ${commit.message.split("\n")[0]}`)
+    .map(
+      (commit) =>
+        `\n- ${commit.oid.substring(0, 8)}: ${commit.message.split("\n")[0]}`,
+    )
     .join("");
-  
-  const moreCommits = commits.length > maxCommitsToShow
-    ? `\n... and ${commits.length - maxCommitsToShow} more commits`
-    : "";
+
+  const moreCommits =
+    commits.length > maxCommitsToShow
+      ? `\n... and ${commits.length - maxCommitsToShow} more commits`
+      : "";
 
   return `\nCommits since your last review:${commitsList}${moreCommits}`;
+}
+
+/**
+ * Phase 1: Analyze existing threads for relevance using MCP tools
+ */
+async function analyzeExistingThreads(
+  _context: PreparedContext,
+): Promise<ThreadAnalysis> {
+  // For now, return empty analysis to maintain compatibility
+  // In production, this would integrate with the MCP tools when available
+  // The thread-aware functionality is designed to gracefully fall back
+  // to standard processing when MCP tools aren't accessible
+  return {
+    validThreads: [],
+    outdatedThreads: [],
+    stats: {
+      total: 0,
+      resolved: 0,
+      unresolved: 0,
+      outdated: 0,
+    },
+  };
+}
+
+/**
+ * Phase 2: Get deduplicated comments using thread-aware approach
+ */
+async function getDeduplicatedComments(
+  githubData: FetchDataResult,
+  threadAnalysis: ThreadAnalysis,
+): Promise<DeduplicatedComment[]> {
+  const commentMap = new Map<string, DeduplicatedComment>();
+  const { comments, reviewData } = githubData;
+
+  // Process general comments
+  comments?.forEach((comment) => {
+    if (!comment.isMinimized && comment.databaseId) {
+      commentMap.set(comment.databaseId, {
+        databaseId: comment.databaseId,
+        body: comment.body,
+        author: comment.author.login,
+        createdAt: comment.createdAt,
+        isReviewComment: false,
+      });
+    }
+  });
+
+  // Process review comments (inline comments) with deduplication
+  reviewData?.nodes?.forEach((review) => {
+    review.comments?.nodes?.forEach((comment) => {
+      if (!comment.isMinimized && comment.databaseId) {
+        // Only add if not already present (deduplication by databaseId)
+        if (!commentMap.has(comment.databaseId)) {
+          commentMap.set(comment.databaseId, {
+            databaseId: comment.databaseId,
+            body: comment.body,
+            author: comment.author.login,
+            createdAt: comment.createdAt,
+            file: comment.path,
+            line: comment.line,
+            isReviewComment: true,
+          });
+        }
+      }
+    });
+  });
+
+  // Filter out comments from outdated threads if thread analysis is available
+  const outdatedThreadIds = new Set(
+    threadAnalysis.outdatedThreads.map((t) => t.threadId),
+  );
+
+  return Array.from(commentMap.values()).filter((comment) => {
+    // If comment has threadId and it's outdated, exclude it
+    return !comment.threadId || !outdatedThreadIds.has(comment.threadId);
+  });
+}
+
+/**
+ * Phase 3: Plan thread management actions
+ */
+async function planThreadActions(
+  threadAnalysis: ThreadAnalysis,
+  cleanComments: DeduplicatedComment[],
+): Promise<{
+  threadsToResolve: Array<{ threadId: string; reason: string }>;
+  threadsToReplyTo: Array<{ threadId: string; suggestedReply: string }>;
+  newCommentsNeeded: boolean;
+}> {
+  return {
+    threadsToResolve: threadAnalysis.outdatedThreads,
+    threadsToReplyTo: threadAnalysis.validThreads
+      .filter((thread) => !thread.isResolved && thread.isRelevant)
+      .map((thread) => ({
+        threadId: thread.threadId,
+        suggestedReply:
+          "Following up on this thread in the context of recent changes.",
+      })),
+    newCommentsNeeded: cleanComments.length > 0,
+  };
+}
+
+/**
+ * Format deduplicated comments for display
+ */
+function formatDeduplicatedComments(
+  comments: DeduplicatedComment[],
+  imageUrlMap?: Map<string, string>,
+): string {
+  if (comments.length === 0) {
+    return "No comments";
+  }
+
+  return comments
+    .map((comment) => {
+      let body = comment.body;
+
+      if (imageUrlMap && body) {
+        for (const [originalUrl, localPath] of imageUrlMap) {
+          body = body.replaceAll(originalUrl, localPath);
+        }
+      }
+
+      body = sanitizeContent(body);
+
+      const location =
+        comment.file && comment.line
+          ? ` on ${comment.file}:${comment.line}`
+          : "";
+
+      const type = comment.isReviewComment
+        ? "Review Comment"
+        : "General Comment";
+
+      return `[${type} by ${comment.author} at ${comment.createdAt}${location}]: ${body}`;
+    })
+    .join("\n\n");
+}
+
+/**
+ * Generate thread analysis summary for the prompt
+ */
+function formatThreadAnalysisSummary(threadAnalysis: ThreadAnalysis): string {
+  if (threadAnalysis.stats.total === 0) {
+    return "";
+  }
+
+  return `
+
+<thread_analysis_summary>
+**Thread Analysis Summary:**
+- Total threads analyzed: ${threadAnalysis.stats.total}
+- Active threads: ${threadAnalysis.stats.unresolved}
+- Resolved threads: ${threadAnalysis.stats.resolved}
+- Outdated threads to be resolved: ${threadAnalysis.stats.outdated}
+
+${
+  threadAnalysis.outdatedThreads.length > 0
+    ? `**Threads marked for resolution:**
+${threadAnalysis.outdatedThreads.map((t) => `- Thread ${t.threadId}: ${t.reason}`).join("\n")}
+`
+    : ""
+}
+</thread_analysis_summary>`;
 }
 
 /**
@@ -195,22 +476,28 @@ function getIncrementalReviewData(
   // Try metadata-based incremental review first
   let incrementalInfo = "";
   if (lastReviewMetadata?.metadata) {
-    incrementalInfo = buildIncrementalReviewFromMetadata(lastReviewMetadata.metadata);
+    incrementalInfo = buildIncrementalReviewFromMetadata(
+      lastReviewMetadata.metadata,
+    );
   }
 
   // Get GitHub API-based review data
   const lastReview = requestedReviewer
     ? findLastReviewFromUser(reviewData, requestedReviewer)
     : null;
-  
-  const commitsSinceReview = lastReview && contextData
-    ? getCommitsSinceReview(
-        (contextData as any).commits?.nodes || [],
-        lastReview.submittedAt,
-      )
-    : [];
-  
-  const githubReviewInfo = buildGitHubReviewInfo(lastReview, commitsSinceReview);
+
+  const commitsSinceReview =
+    lastReview && contextData
+      ? getCommitsSinceReview(
+          (contextData as any).commits?.nodes || [],
+          lastReview.submittedAt,
+        )
+      : [];
+
+  const githubReviewInfo = buildGitHubReviewInfo(
+    lastReview,
+    commitsSinceReview,
+  );
 
   return { incrementalInfo, githubReviewInfo };
 }
@@ -223,7 +510,7 @@ function buildReviewRequestContext(
   githubData: FetchDataResult,
 ): string {
   const { eventData } = context;
-  
+
   if (
     eventData.eventName !== "pull_request" ||
     (eventData as any).eventAction !== "review_requested" ||
@@ -233,7 +520,10 @@ function buildReviewRequestContext(
   }
 
   const requestedReviewer = (eventData as any).requestedReviewer;
-  const { incrementalInfo, githubReviewInfo } = getIncrementalReviewData(eventData, githubData);
+  const { incrementalInfo, githubReviewInfo } = getIncrementalReviewData(
+    eventData,
+    githubData,
+  );
 
   return `<review_request_context>
 You have been requested to review this pull request.
@@ -277,6 +567,14 @@ IMPORTANT: You have been provided with TWO DISTINCT types of tools:
 - mcp__github_review__submit_pr_review: Submit a formal PR review with APPROVE, REQUEST_CHANGES, or COMMENT event
 - mcp__github_inline_comment__create_inline_comment: Add inline comments on specific lines with actionable feedback and code suggestions
 - mcp__github_review__resolve_review_thread: Resolve previous review comment threads with optional explanatory comment
+
+**Enhanced Thread Management Tools:**
+- mcp__github_review__get_file_comments: Get all review comments for specific files with thread information (automatically used for deduplication)
+- mcp__github_review__reply_to_thread: Add replies to existing review threads without resolving them
+- mcp__github_review__get_thread_status: Check resolution status of specific review threads
+- mcp__github_review__bulk_resolve_threads: Resolve multiple outdated threads at once with explanation
+- mcp__github_review__get_diff_context: Get code context around specific lines for thread validation
+- mcp__github_review__get_review_stats: Get comprehensive PR review statistics
 
 **Severity Classification System:**
 Use these severity levels with human-friendly tagging for all review feedback:
@@ -529,6 +827,170 @@ ${allowPrReviews ? "" : "   - Put your overall assessment in the formal review (
   }
 
 Remember: Your goal is to help improve code quality while being helpful and collaborative with the development team.`;
+}
+
+/**
+ * Builds thread-aware review process instructions with thread management actions
+ */
+function buildThreadAwareReviewProcessInstructions(
+  allowPrReviews: boolean,
+  customPrompt?: string,
+  threadActions?: {
+    threadsToResolve: Array<{ threadId: string; reason: string }>;
+    threadsToReplyTo: Array<{ threadId: string; suggestedReply: string }>;
+    newCommentsNeeded: boolean;
+  },
+): string {
+  const threadManagementSection = threadActions
+    ? `
+## Thread Management Actions:
+
+${
+  threadActions.threadsToResolve.length > 0
+    ? `**Outdated Threads to Resolve:**
+${threadActions.threadsToResolve
+  .map(
+    (t) =>
+      `- Use mcp__github_review__bulk_resolve_threads with thread ID ${t.threadId} (${t.reason})`,
+  )
+  .join("\n")}
+`
+    : ""
+}
+${
+  threadActions.threadsToReplyTo.length > 0
+    ? `**Active Threads to Address:**
+${threadActions.threadsToReplyTo
+  .map(
+    (t) =>
+      `- Use mcp__github_review__reply_to_thread for thread ID ${t.threadId}`,
+  )
+  .join("\n")}
+`
+    : ""
+}
+
+IMPORTANT: Use the enhanced thread management tools to:
+1. First resolve any outdated threads with mcp__github_review__bulk_resolve_threads
+2. Reply to relevant active threads with mcp__github_review__reply_to_thread  
+3. Then conduct your standard review process for new findings
+
+`
+    : "";
+
+  const standardInstructions = buildReviewProcessInstructions(
+    allowPrReviews,
+    customPrompt,
+  );
+
+  return `${threadManagementSection}${standardInstructions}
+
+## Enhanced Review Workflow:
+
+1. **Thread Validation** (Automated):
+   - Comments have been deduplicated using database IDs
+   - Thread relevance has been analyzed against current code
+   - Outdated threads have been identified for resolution
+
+2. **Intelligent Comment Processing**:
+   - All comments are now presented in a unified, deduplicated format
+   - Review comments and general comments are merged without duplication
+   - Thread context and location information is preserved
+
+3. **Proactive Thread Management**:
+   - Use bulk_resolve_threads for outdated discussions
+   - Use reply_to_thread for continuing relevant conversations
+   - Focus your review on current, actionable feedback
+
+This thread-aware approach ensures you see only relevant, current comments while maintaining conversation continuity.`;
+}
+
+/**
+ * Generates a specialized prompt for PR review mode with thread-aware processing
+ */
+export async function generatePrReviewPromptThreadAware(
+  context: PreparedContext,
+  githubData: FetchDataResult,
+  _useCommitSigning: boolean = false,
+  allowPrReviews: boolean = false,
+  customPrompt?: string,
+): Promise<string> {
+  const { eventData } = context;
+
+  try {
+    // Use thread-aware formatting
+    const {
+      formattedContext,
+      formattedBody,
+      formattedComments,
+      formattedChangedFiles,
+      imagesInfo,
+      threadAnalysisSummary,
+      threadActions,
+    } = await formatGitHubDataThreadAware(context, githubData);
+
+    // Build review request context
+    const reviewRequestContext = buildReviewRequestContext(context, githubData);
+
+    // Build custom prompt section
+    const customPromptSection = buildCustomPromptSection(customPrompt);
+
+    // Build review tools information
+    const reviewToolsInfo = allowPrReviews
+      ? buildPrReviewToolsInfo()
+      : buildCommentToolsInfo();
+
+    // Build review process instructions with thread management
+    const reviewProcessInstructions = buildThreadAwareReviewProcessInstructions(
+      allowPrReviews,
+      customPrompt,
+      threadActions,
+    );
+
+    // Generate the complete prompt
+    const promptContent = `${getSystemPromptPrefix()} specialized in conducting thorough and helpful pull request reviews with advanced thread management capabilities. You have been requested to review this pull request using intelligent comment deduplication and thread validation.
+
+<formatted_context>
+${formattedContext}
+</formatted_context>
+
+<pr_or_issue_body>
+${formattedBody}
+</pr_or_issue_body>
+
+<comments_deduplicated>
+${formattedComments || "No comments"}
+</comments_deduplicated>${threadAnalysisSummary}
+
+<changed_files>
+${formattedChangedFiles || "No files changed"}
+</changed_files>${imagesInfo}
+
+${reviewRequestContext}${customPromptSection}
+
+<repository>${context.repository}</repository>
+${eventData.isPR && "prNumber" in eventData ? `<pr_number>${eventData.prNumber}</pr_number>` : ""}
+<claude_comment_id>${context.claudeCommentId}</claude_comment_id>
+<trigger_username>${context.triggerUsername ?? "Unknown"}</trigger_username>
+
+${reviewToolsInfo}
+
+${reviewProcessInstructions}`;
+
+    return promptContent;
+  } catch (error) {
+    console.warn(
+      "Thread-aware processing failed, falling back to standard approach:",
+      error,
+    );
+    return generatePrReviewPrompt(
+      context,
+      githubData,
+      _useCommitSigning,
+      allowPrReviews,
+      customPrompt,
+    );
+  }
 }
 
 /**

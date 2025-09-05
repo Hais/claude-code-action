@@ -275,6 +275,442 @@ async function addTrackingCommentMetadata(
 }
 
 server.tool(
+  "get_file_comments",
+  "Get all review comments for specific files in the PR, with thread information",
+  {
+    files: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Array of file paths to get comments for. If not provided, gets comments for all files.",
+      ),
+    includeResolved: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe("Include resolved threads in the results"),
+  },
+  async ({ files, includeResolved }) => {
+    try {
+      const githubToken = process.env.GITHUB_TOKEN;
+
+      if (!githubToken) {
+        throw new Error("GITHUB_TOKEN environment variable is required");
+      }
+
+      const owner = REPO_OWNER;
+      const repo = REPO_NAME;
+      const pull_number = parseInt(PR_NUMBER, 10);
+
+      const octokits = createOctokit(githubToken);
+
+      // Get PR review threads with comments
+      const result = await octokits.graphql<{
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: Array<{
+                id: string;
+                isResolved: boolean;
+                comments: {
+                  nodes: Array<{
+                    id: string;
+                    databaseId: number;
+                    body: string;
+                    path: string;
+                    line: number | null;
+                    originalLine: number | null;
+                    author: {
+                      login: string;
+                    };
+                    createdAt: string;
+                    updatedAt: string;
+                  }>;
+                };
+              }>;
+            };
+          };
+        };
+      }>(
+        `
+        query($owner: String!, $repo: String!, $number: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100) {
+                nodes {
+                  id
+                  isResolved
+                  comments(first: 50) {
+                    nodes {
+                      id
+                      databaseId
+                      body
+                      path
+                      line
+                      originalLine
+                      author {
+                        login
+                      }
+                      createdAt
+                      updatedAt
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `,
+        {
+          owner,
+          repo,
+          number: pull_number,
+        },
+      );
+
+      const threads = result.repository.pullRequest.reviewThreads.nodes;
+
+      // Filter threads based on resolution status
+      const filteredThreads = includeResolved
+        ? threads
+        : threads.filter((thread) => !thread.isResolved);
+
+      // Group comments by file if specific files requested
+      let fileComments: Record<string, any[]> = {};
+
+      for (const thread of filteredThreads) {
+        for (const comment of thread.comments.nodes) {
+          if (comment.path && (!files || files.includes(comment.path))) {
+            if (!fileComments[comment.path]) {
+              fileComments[comment.path] = [];
+            }
+            const pathComments = fileComments[comment.path];
+            if (pathComments) {
+              pathComments.push({
+                threadId: thread.id,
+                isResolved: thread.isResolved,
+                comment: {
+                  id: comment.id,
+                  databaseId: comment.databaseId,
+                  body: comment.body,
+                  line: comment.line,
+                  originalLine: comment.originalLine,
+                  author: comment.author.login,
+                  createdAt: comment.createdAt,
+                  updatedAt: comment.updatedAt,
+                },
+              });
+            }
+          }
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                fileComments,
+                totalThreads: filteredThreads.length,
+                totalComments: Object.values(fileComments).flat().length,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      Sentry.withScope((scope) => {
+        scope.setTag("operation", "get_file_comments");
+        scope.setContext("repository", {
+          owner: REPO_OWNER,
+          repo: REPO_NAME,
+          pull_number: parseInt(PR_NUMBER, 10),
+        });
+        scope.setLevel("error");
+        Sentry.captureException(
+          error instanceof Error ? error : new Error(errorMessage),
+        );
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting file comments: ${errorMessage}`,
+          },
+        ],
+        error: errorMessage,
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "reply_to_thread",
+  "Add a reply to an existing review thread without resolving it",
+  {
+    threadId: z
+      .string()
+      .describe(
+        "The GraphQL thread ID to reply to (get this from get_file_comments or review queries)",
+      ),
+    body: z
+      .string()
+      .describe("The reply text to add to the thread (supports markdown)"),
+  },
+  async ({ threadId, body }) => {
+    try {
+      const githubToken = process.env.GITHUB_TOKEN;
+
+      if (!githubToken) {
+        throw new Error("GITHUB_TOKEN environment variable is required");
+      }
+
+      const octokits = createOctokit(githubToken);
+      const sanitizedBody = sanitizeContent(body);
+
+      const result = await octokits.graphql<{
+        addPullRequestReviewThreadReply: {
+          comment: {
+            id: string;
+            databaseId: number;
+          };
+        };
+      }>(
+        `
+        mutation($threadId: ID!, $body: String!) {
+          addPullRequestReviewThreadReply(input: {
+            pullRequestReviewThreadId: $threadId
+            body: $body
+          }) {
+            comment {
+              id
+              databaseId
+            }
+          }
+        }
+      `,
+        {
+          threadId,
+          body: sanitizedBody,
+        },
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                commentId: result.addPullRequestReviewThreadReply.comment.id,
+                databaseId:
+                  result.addPullRequestReviewThreadReply.comment.databaseId,
+                threadId,
+                message: "Reply added to thread successfully",
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      Sentry.withScope((scope) => {
+        scope.setTag("operation", "reply_to_thread");
+        scope.setContext("thread_details", {
+          thread_id: threadId,
+          body_preview:
+            body?.substring(0, 50) + (body && body.length > 50 ? "..." : ""),
+        });
+        scope.setLevel("error");
+        Sentry.captureException(
+          error instanceof Error ? error : new Error(errorMessage),
+        );
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error replying to thread: ${errorMessage}`,
+          },
+        ],
+        error: errorMessage,
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "get_thread_status",
+  "Get the status and details of specific review threads",
+  {
+    threadIds: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Array of thread IDs to check. If not provided, gets status for all threads.",
+      ),
+  },
+  async ({ threadIds }) => {
+    try {
+      const githubToken = process.env.GITHUB_TOKEN;
+
+      if (!githubToken) {
+        throw new Error("GITHUB_TOKEN environment variable is required");
+      }
+
+      const owner = REPO_OWNER;
+      const repo = REPO_NAME;
+      const pull_number = parseInt(PR_NUMBER, 10);
+
+      const octokits = createOctokit(githubToken);
+
+      const result = await octokits.graphql<{
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: Array<{
+                id: string;
+                isResolved: boolean;
+                comments: {
+                  totalCount: number;
+                  nodes: Array<{
+                    path: string;
+                    line: number | null;
+                    author: {
+                      login: string;
+                    };
+                    createdAt: string;
+                  }>;
+                };
+              }>;
+            };
+          };
+        };
+      }>(
+        `
+        query($owner: String!, $repo: String!, $number: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100) {
+                nodes {
+                  id
+                  isResolved
+                  comments(first: 1) {
+                    totalCount
+                    nodes {
+                      path
+                      line
+                      author {
+                        login
+                      }
+                      createdAt
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `,
+        {
+          owner,
+          repo,
+          number: pull_number,
+        },
+      );
+
+      const allThreads = result.repository.pullRequest.reviewThreads.nodes;
+
+      // Filter to specific threads if requested
+      const filteredThreads = threadIds
+        ? allThreads.filter((thread) => threadIds.includes(thread.id))
+        : allThreads;
+
+      const threadStatuses = filteredThreads.map((thread) => {
+        const firstComment = thread.comments.nodes[0];
+        return {
+          threadId: thread.id,
+          isResolved: thread.isResolved,
+          commentCount: thread.comments.totalCount,
+          file: firstComment?.path,
+          line: firstComment?.line,
+          author: firstComment?.author.login,
+          createdAt: firstComment?.createdAt,
+        };
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                threads: threadStatuses,
+                summary: {
+                  total: threadStatuses.length,
+                  resolved: threadStatuses.filter((t) => t.isResolved).length,
+                  unresolved: threadStatuses.filter((t) => !t.isResolved)
+                    .length,
+                },
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      Sentry.withScope((scope) => {
+        scope.setTag("operation", "get_thread_status");
+        scope.setContext("repository", {
+          owner: REPO_OWNER,
+          repo: REPO_NAME,
+          pull_number: parseInt(PR_NUMBER, 10),
+        });
+        scope.setContext("thread_details", {
+          thread_ids: threadIds,
+          thread_count: threadIds?.length || 0,
+        });
+        scope.setLevel("error");
+        Sentry.captureException(
+          error instanceof Error ? error : new Error(errorMessage),
+        );
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting thread status: ${errorMessage}`,
+          },
+        ],
+        error: errorMessage,
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
   "resolve_review_thread",
   "Resolve a pull request review thread (conversation) with an optional comment. Requires Contents: Read/Write permissions.",
   {
@@ -418,6 +854,488 @@ server.tool(
           {
             type: "text",
             text: `Error resolving review thread: ${errorMessage}${helpMessage}`,
+          },
+        ],
+        error: errorMessage,
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "bulk_resolve_threads",
+  "Resolve multiple review threads at once with optional comments",
+  {
+    threadIds: z
+      .array(z.string())
+      .describe("Array of GraphQL thread IDs to resolve"),
+    comment: z
+      .string()
+      .optional()
+      .describe(
+        "Optional comment to add to all threads when resolving (e.g., 'All issues addressed in latest commit')",
+      ),
+  },
+  async ({ threadIds, comment }) => {
+    try {
+      const githubToken = process.env.GITHUB_TOKEN;
+
+      if (!githubToken) {
+        throw new Error("GITHUB_TOKEN environment variable is required");
+      }
+
+      const octokits = createOctokit(githubToken);
+      const results = [];
+      const errors = [];
+
+      for (const threadId of threadIds) {
+        try {
+          // Add comment if provided
+          if (comment && comment.trim()) {
+            const sanitizedComment = sanitizeContent(comment);
+            try {
+              await octokits.graphql(
+                `
+                mutation($threadId: ID!, $body: String!) {
+                  addPullRequestReviewThreadReply(input: {
+                    pullRequestReviewThreadId: $threadId
+                    body: $body
+                  }) {
+                    comment {
+                      id
+                    }
+                  }
+                }
+              `,
+                {
+                  threadId,
+                  body: sanitizedComment,
+                },
+              );
+            } catch (commentError) {
+              console.warn(
+                `Failed to add comment to thread ${threadId}:`,
+                commentError,
+              );
+            }
+          }
+
+          // Resolve the thread
+          const result = await octokits.graphql<{
+            resolveReviewThread: {
+              thread: {
+                id: string;
+                isResolved: boolean;
+              };
+            };
+          }>(
+            `
+            mutation($threadId: ID!) {
+              resolveReviewThread(input: {
+                threadId: $threadId
+              }) {
+                thread {
+                  id
+                  isResolved
+                }
+              }
+            }
+          `,
+            {
+              threadId,
+            },
+          );
+
+          results.push({
+            threadId,
+            success: true,
+            isResolved: result.resolveReviewThread.thread.isResolved,
+          });
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          errors.push({
+            threadId,
+            error: errorMessage,
+          });
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: errors.length === 0,
+                resolved: results.length,
+                failed: errors.length,
+                results,
+                errors,
+                message: `Resolved ${results.length}/${threadIds.length} threads${comment ? " with comment" : ""}`,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      Sentry.withScope((scope) => {
+        scope.setTag("operation", "bulk_resolve_threads");
+        scope.setContext("thread_details", {
+          thread_ids: threadIds,
+          thread_count: threadIds.length,
+          has_comment: !!comment,
+          comment_preview:
+            comment?.substring(0, 50) +
+            (comment && comment.length > 50 ? "..." : ""),
+        });
+        scope.setLevel("error");
+        Sentry.captureException(
+          error instanceof Error ? error : new Error(errorMessage),
+        );
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error bulk resolving threads: ${errorMessage}`,
+          },
+        ],
+        error: errorMessage,
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "get_diff_context",
+  "Get diff context around specific lines in PR files",
+  {
+    file: z.string().describe("File path to get diff context for"),
+    line: z.number().describe("Line number to get context around"),
+    contextLines: z
+      .number()
+      .optional()
+      .default(3)
+      .describe("Number of context lines before and after (default: 3)"),
+  },
+  async ({ file, line, contextLines }) => {
+    try {
+      const githubToken = process.env.GITHUB_TOKEN;
+
+      if (!githubToken) {
+        throw new Error("GITHUB_TOKEN environment variable is required");
+      }
+
+      const owner = REPO_OWNER;
+      const repo = REPO_NAME;
+      const pull_number = parseInt(PR_NUMBER, 10);
+
+      const octokits = createOctokit(githubToken);
+
+      // Get PR details to get the commit SHA
+      const pr = await octokits.rest.pulls.get({
+        owner,
+        repo,
+        pull_number,
+      });
+
+      // Get the file content from the PR head
+      const fileContent = await octokits.rest.repos.getContent({
+        owner,
+        repo,
+        path: file,
+        ref: pr.data.head.sha,
+      });
+
+      if (Array.isArray(fileContent.data) || fileContent.data.type !== "file") {
+        throw new Error(`${file} is not a regular file`);
+      }
+
+      const content = Buffer.from(fileContent.data.content, "base64")
+        .toString("utf-8")
+        .split("\n");
+
+      const startLine = Math.max(0, line - contextLines - 1);
+      const endLine = Math.min(content.length, line + contextLines);
+
+      const contextLines_data = content
+        .slice(startLine, endLine)
+        .map((lineContent, index) => ({
+          lineNumber: startLine + index + 1,
+          content: lineContent,
+          isTargetLine: startLine + index + 1 === line,
+        }));
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                file,
+                targetLine: line,
+                contextLines: contextLines_data,
+                totalLines: content.length,
+                sha: pr.data.head.sha,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      Sentry.withScope((scope) => {
+        scope.setTag("operation", "get_diff_context");
+        scope.setContext("repository", {
+          owner: REPO_OWNER,
+          repo: REPO_NAME,
+          pull_number: parseInt(PR_NUMBER, 10),
+        });
+        scope.setContext("file_details", {
+          file_path: file,
+          target_line: line,
+          context_lines: contextLines,
+        });
+        scope.setLevel("error");
+        Sentry.captureException(
+          error instanceof Error ? error : new Error(errorMessage),
+        );
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting diff context: ${errorMessage}`,
+          },
+        ],
+        error: errorMessage,
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "get_review_stats",
+  "Get comprehensive statistics about the PR review status",
+  {
+    includeDetails: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe("Include detailed breakdown of threads by file"),
+  },
+  async ({ includeDetails }) => {
+    try {
+      const githubToken = process.env.GITHUB_TOKEN;
+
+      if (!githubToken) {
+        throw new Error("GITHUB_TOKEN environment variable is required");
+      }
+
+      const owner = REPO_OWNER;
+      const repo = REPO_NAME;
+      const pull_number = parseInt(PR_NUMBER, 10);
+
+      const octokits = createOctokit(githubToken);
+
+      const result = await octokits.graphql<{
+        repository: {
+          pullRequest: {
+            reviews: {
+              totalCount: number;
+              nodes: Array<{
+                state: string;
+                author: {
+                  login: string;
+                };
+                submittedAt: string;
+              }>;
+            };
+            reviewThreads: {
+              totalCount: number;
+              nodes: Array<{
+                id: string;
+                isResolved: boolean;
+                comments: {
+                  totalCount: number;
+                  nodes: Array<{
+                    path: string;
+                    author: {
+                      login: string;
+                    };
+                  }>;
+                };
+              }>;
+            };
+          };
+        };
+      }>(
+        `
+        query($owner: String!, $repo: String!, $number: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $number) {
+              reviews(first: 100) {
+                totalCount
+                nodes {
+                  state
+                  author {
+                    login
+                  }
+                  submittedAt
+                }
+              }
+              reviewThreads(first: 100) {
+                totalCount
+                nodes {
+                  id
+                  isResolved
+                  comments(first: 1) {
+                    totalCount
+                    nodes {
+                      path
+                      author {
+                        login
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `,
+        {
+          owner,
+          repo,
+          number: pull_number,
+        },
+      );
+
+      const reviews = result.repository.pullRequest.reviews.nodes;
+      const threads = result.repository.pullRequest.reviewThreads.nodes;
+
+      // Calculate review statistics
+      const reviewStats = {
+        totalReviews: reviews.length,
+        approved: reviews.filter((r) => r.state === "APPROVED").length,
+        changesRequested: reviews.filter((r) => r.state === "CHANGES_REQUESTED")
+          .length,
+        comments: reviews.filter((r) => r.state === "COMMENTED").length,
+        dismissed: reviews.filter((r) => r.state === "DISMISSED").length,
+      };
+
+      const threadStats = {
+        totalThreads: threads.length,
+        resolved: threads.filter((t) => t.isResolved).length,
+        unresolved: threads.filter((t) => !t.isResolved).length,
+        totalComments: threads.reduce(
+          (sum, t) => sum + t.comments.totalCount,
+          0,
+        ),
+      };
+
+      // File-level details if requested
+      const fileDetails = includeDetails
+        ? threads.reduce(
+            (acc, thread) => {
+              const firstComment = thread.comments.nodes[0];
+              if (firstComment?.path) {
+                if (!acc[firstComment.path]) {
+                  acc[firstComment.path] = {
+                    resolved: 0,
+                    unresolved: 0,
+                    totalComments: 0,
+                  };
+                }
+                const fileDetail = acc[firstComment.path];
+                if (fileDetail) {
+                  if (thread.isResolved) {
+                    fileDetail.resolved++;
+                  } else {
+                    fileDetail.unresolved++;
+                  }
+                  fileDetail.totalComments += thread.comments.totalCount;
+                }
+              }
+              return acc;
+            },
+            {} as Record<
+              string,
+              { resolved: number; unresolved: number; totalComments: number }
+            >,
+          )
+        : undefined;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                reviews: reviewStats,
+                threads: threadStats,
+                ...(fileDetails && { fileDetails }),
+                summary: {
+                  hasApprovals: reviewStats.approved > 0,
+                  hasChangeRequests: reviewStats.changesRequested > 0,
+                  hasUnresolvedThreads: threadStats.unresolved > 0,
+                  reviewCompletionRate:
+                    threadStats.totalThreads > 0
+                      ? Math.round(
+                          (threadStats.resolved / threadStats.totalThreads) *
+                            100,
+                        )
+                      : 100,
+                },
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      Sentry.withScope((scope) => {
+        scope.setTag("operation", "get_review_stats");
+        scope.setContext("repository", {
+          owner: REPO_OWNER,
+          repo: REPO_NAME,
+          pull_number: parseInt(PR_NUMBER, 10),
+        });
+        scope.setContext("request_details", {
+          include_details: includeDetails,
+        });
+        scope.setLevel("error");
+        Sentry.captureException(
+          error instanceof Error ? error : new Error(errorMessage),
+        );
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting review stats: ${errorMessage}`,
           },
         ],
         error: errorMessage,

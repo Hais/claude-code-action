@@ -29,7 +29,10 @@ import {
   getAssistantReference,
 } from "../utils/assistant-branding";
 export type { CommonFields, PreparedContext } from "./types";
-export { generatePrReviewPrompt } from "./pr-review-prompt";
+export {
+  generatePrReviewPrompt,
+  generatePrReviewPromptThreadAware,
+} from "./pr-review-prompt";
 
 // Helper function to find the last review from a specific user
 export function findLastReviewFromUser(
@@ -554,21 +557,24 @@ function getCommitInstructions(
   }
 }
 
-export function generatePrompt(
+export async function generatePrompt(
   context: PreparedContext,
   githubData: FetchDataResult,
   useCommitSigning: boolean,
   mode: Mode,
   allowPrReviews: boolean = false,
-): string {
+): Promise<string> {
   // Always use the mode's generatePrompt method
   // Each mode can decide how to handle custom prompts
-  return mode.generatePrompt(
+  const result = mode.generatePrompt(
     context,
     githubData,
     useCommitSigning,
     allowPrReviews,
   );
+
+  // Handle both sync and async mode results
+  return await Promise.resolve(result);
 }
 
 /**
@@ -981,7 +987,7 @@ export async function createPrompt(
     });
 
     // Generate the prompt directly
-    const promptContent = generatePrompt(
+    const promptContent = await generatePrompt(
       preparedContext,
       githubData,
       context.inputs.useCommitSigning,
