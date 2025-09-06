@@ -105,8 +105,17 @@ async function formatGitHubDataThreadAware(
   FormattedGitHubData & {
     threadAnalysisSummary: string;
     threadActions: {
-      threadsToResolve: Array<{ threadId: string; displayId: string; reason: string; suggestedMessage: string }>;
-      threadsToReplyTo: Array<{ threadId: string; displayId: string; suggestedReply: string }>;
+      threadsToResolve: Array<{
+        threadId: string;
+        displayId: string;
+        reason: string;
+        suggestedMessage: string;
+      }>;
+      threadsToReplyTo: Array<{
+        threadId: string;
+        displayId: string;
+        suggestedReply: string;
+      }>;
       newCommentsNeeded: boolean;
     };
   }
@@ -743,7 +752,11 @@ async function planThreadActions(
     reason: string;
     suggestedMessage: string;
   }>;
-  threadsToReplyTo: Array<{ threadId: string; displayId: string; suggestedReply: string }>;
+  threadsToReplyTo: Array<{
+    threadId: string;
+    displayId: string;
+    suggestedReply: string;
+  }>;
   newCommentsNeeded: boolean;
 }> {
   // Combine outdated threads with threads ready for resolution
@@ -893,7 +906,10 @@ Focus on files with active threads first to maintain conversation continuity and
       ? `
 **Threads Ready for Resolution (${threadAnalysis.stats.readyForResolution} total):**
 ${threadAnalysis.threadsToResolve
-  .map((t) => `- ${t.displayId}: ${t.reason} - "${t.suggestedMessage}" (MCP ID: ${t.threadId})`)
+  .map(
+    (t) =>
+      `- ${t.displayId}: ${t.reason} - "${t.suggestedMessage}" (MCP ID: ${t.threadId})`,
+  )
   .join("\n")}
 `
       : "";
@@ -988,9 +1004,7 @@ ${incrementalInfo}
 
 ${incrementalInfo ? githubReviewInfo : githubReviewInfo}
 
-IMPORTANT: For incremental reviews, embed review metadata in your tracking comment as HTML comment for future reference:
-<!-- pr-review-metadata-v1: {"lastReviewedSha": "current-head-sha", "reviewDate": "iso-timestamp"} -->
-This helps maintain conversational continuity across force-pushes and rebases.
+IMPORTANT: You are operating in formal review mode with GitHub's native review interface. All feedback should be provided through the formal review tools, not tracking comments.
 </review_request_context>`;
 }
 
@@ -1016,7 +1030,7 @@ Please follow these custom instructions while conducting your review, in additio
  */
 function buildPrReviewToolsInfo(): string {
   return `<review_tool_info>
-IMPORTANT: You have been provided with TWO DISTINCT types of tools:
+IMPORTANT: You are in PR review mode with formal review permissions enabled.
 
 **PR Review Tools:**
 - mcp__github_review__submit_pr_review: Submit a formal PR review with APPROVE, REQUEST_CHANGES, or COMMENT event
@@ -1046,19 +1060,10 @@ Use these severity levels with human-friendly tagging for all review feedback:
 - 💬 **Question**: Clarification needed before judging
 - 👍 **Praise**: Acknowledge good patterns and practices
 
-**Tracking Comment Tool (for task status ONLY - NOT for review feedback):**
-- mcp__github_comment__update_claude_comment: Update your tracking comment EXCLUSIVELY to show task completion status (the checklist)
-
-CRITICAL: When formal review tools are available:
-- ALL review feedback, suggestions, and assessments MUST go through the formal review tools
-- The tracking comment (mcp__github_comment__update_claude_comment) is ONLY for updating the task checklist
-- DO NOT put review feedback in the tracking comment - it belongs in the formal review
-
 Review workflow:
 1. Simple review: Use mcp__github_review__submit_pr_review directly with overall feedback
 2. Comprehensive review: Use mcp__github_inline_comment__create_inline_comment for specific line feedback, then mcp__github_review__submit_pr_review to submit the formal review verdict
 3. Follow-up review: Use mcp__github_review__resolve_review_thread to resolve outdated conversations from previous reviews
-4. Status update: Use mcp__github_comment__update_claude_comment ONLY to update the task checklist (- [x] markings)
 
 Tool usage example for mcp__github_review__submit_pr_review (with status + expandable format):
 {
@@ -1147,20 +1152,6 @@ IMPORTANT: Use mcp__github_review__submit_pr_review for:
   - Use specific indicators (🐞, ⚠️, 🏗️, 🚀, 📚) when primary issue type is clear
 - This creates the official review record on the PR
 
-IMPORTANT: Use mcp__github_comment__update_claude_comment for:
-- Updating the task checklist ONLY (marking items as - [x] complete)
-- Showing progress through the review process
-- DO NOT include review feedback, suggestions, or assessments here
-- This is purely for task tracking - ALL review content goes in the formal review
-
-When to update your tracking comment:
-- After completing initial analysis (mark task as complete)
-- After reviewing each major file or component (mark task as complete)
-- After adding inline review comments (mark task as complete)
-- Before submitting the formal review (mark task as in progress)
-- After submitting the formal review (mark task as complete)
-- ONLY update with checkbox status changes, no review content
-
 Note: Inline comments created with create_inline_comment appear immediately on the diff view, making them highly visible and actionable for developers. The formal review submission with submit_pr_review provides your overall assessment.
 
 Use COMMENT for general feedback, REQUEST_CHANGES to request changes, or APPROVE to approve the PR.
@@ -1168,72 +1159,51 @@ Use COMMENT for general feedback, REQUEST_CHANGES to request changes, or APPROVE
 }
 
 /**
- * Builds comment tools information for non-PR review mode
+ * Builds review process instructions (simplified for review mode)
  */
-function buildCommentToolsInfo(): string {
-  return `<comment_tool_info>
-IMPORTANT: You have been provided with the mcp__github_comment__update_claude_comment tool to update your comment. This tool automatically handles both issue and PR comments.
+function buildReviewProcessInstructions(customPrompt?: string): string {
+  return `Your task is to conduct a thorough pull request review. Here's how to approach it:
 
-Tool usage example for mcp__github_comment__update_claude_comment:
-{
-  "body": "Your comment text here"
-}
-Only the body parameter is required - the tool automatically knows which comment to update.
-</comment_tool_info>`;
-}
+## Review Process:
 
-/**
- * Builds review process instructions
- */
-function buildReviewProcessInstructions(
-  allowPrReviews: boolean,
-  customPrompt?: string,
-): string {
-  const trackingCommentInstructions = allowPrReviews
-    ? "**Direct Review Flow**:\n   - Begin analysis immediately without tracking comment setup\n   - Use formal PR review tools for all feedback and status tracking\n   - GitHub's native review interface provides built-in progress tracking\n\n2. **Initial Analysis**:"
-    : `**Create a Dynamic Todo List**:
-   - Use your tracking comment to maintain a task checklist ONLY (no review content)
-   - Format todos as a checklist (- [ ] for incomplete, - [x] for complete)
-   - Update ONLY the checkbox status using mcp__github_comment__update_claude_comment
-   - **Base checklist (always include):**
-     - [ ] Initial Analysis - Understanding PR purpose and scope
-     - [ ] Code Review - Examining changes for quality and issues
-     - [ ] Submit Formal Review - Submitting GitHub review decision
-   - **Add contextual tasks based on file patterns:**
-     - If dependencies changed (package.json, go.mod, requirements.txt): Add "[ ] Dependency Review - Security and compatibility check"
-     - If database files (.sql, migrations): Add "[ ] Migration Safety - Forward/backward compatibility review"
-     - If public API changes (exported functions, endpoints): Add "[ ] API Compatibility - Breaking changes and documentation review"
-     - If CI/workflow files: Add "[ ] CI Security - Secret handling and permissions review"
-     - If performance-critical paths: Add "[ ] Performance Review - Checking for performance implications"
-     - If authentication/authorization code: Add "[ ] Security Review - Authentication and access control check"
-     - If test files substantial: Add "[ ] Test Coverage - Verify adequate test coverage for changes"
-   - CRITICAL: This tracking comment is ONLY for checkboxes - ALL review feedback goes in the formal review
+1. **Direct Review Flow**:
+   - Begin analysis immediately without tracking comment setup
+   - Use formal PR review tools for all feedback and status tracking
+   - GitHub's native review interface provides built-in progress tracking
 
-2. **Initial Analysis**:`;
+2. **Initial Analysis**:
+   - Read the PR description and understand the purpose of the changes
+   - Review the changed files to understand the scope of modifications
+   - Note any existing comments or previous review feedback
 
-  const feedbackInstructions = allowPrReviews
-    ? `- Use mcp__github_inline_comment__create_inline_comment for specific line-by-line feedback on the code
+3. **Code Review**:
+   - Examine each changed file for code quality, logic, and potential issues
+   - Look for bugs, security vulnerabilities, performance issues, or style problems
+   - Check for proper error handling, edge cases, and test coverage
+   - Verify that the implementation matches the PR description
+
+4. **Provide Feedback**:
+   - Use mcp__github_inline_comment__create_inline_comment for specific line-by-line feedback on the code
    - Use mcp__github_review__resolve_review_thread to resolve outdated conversations from previous reviews
    - Use mcp__github_review__submit_pr_review to submit your formal GitHub review with:
      - APPROVE: If the changes look good with no significant issues
      - REQUEST_CHANGES: If there are important issues that need to be addressed  
      - COMMENT: For general feedback or questions without blocking approval
-   - All feedback and progress tracking handled through GitHub's native review system`
-    : `- Update your tracking comment with review feedback using mcp__github_comment__update_claude_comment
-   - Provide both positive feedback and constructive criticism
-   - Be specific about issues and suggest solutions where possible`;
+   - All feedback and progress tracking handled through GitHub's native review system
 
-  const finalStepsInstructions = allowPrReviews
-    ? `- Submit your formal review using mcp__github_review__submit_pr_review with your decision and ALL feedback
-   - Start with a **concise 2-3 sentence summary** stating your verdict and key reasoning
-   - Follow with **detailed analysis in expandable <details> section** for full transparency
-   - Use inline comments for specific line-by-line feedback
-   - No separate tracking comment management required`
-    : `- Update your tracking comment with final review feedback using mcp__github_comment__update_claude_comment
-   - Ensure all review tasks show as complete in your checklist`;
+5. **Review Guidelines**:
+   - Be constructive and respectful in your feedback
+   - Explain the "why" behind your suggestions with specific benefits
+   - Consider the broader impact of changes on the codebase
+   - Balance thoroughness with practicality - focus on evidence-based concerns
+   - **ESSENTIAL: Include "What's Solid" section with specific positive reinforcement:**
+     - Acknowledge good patterns: "Excellent use of Promise.all here for parallel operations - much more efficient"
+     - Praise good tests: "The edge case tests for this function are fantastic and will prevent regressions"
+     - Recognize cleanups: "This refactoring greatly improves readability and maintainability"
+     - Highlight security improvements: "Good catch adding input validation here"
 
-  const structureInstructions = allowPrReviews
-    ? `- **Structure your formal review with concise summary + expandable details:**
+6. **Strategic Review Sections (Context-Aware)**:
+   - **Structure your formal review with concise summary + expandable details:**
      
      **Format Structure:**
      \`\`\`
@@ -1269,48 +1239,18 @@ function buildReviewProcessInstructions(
      - \`## 📚 Needs Documentation\` - Missing/inadequate docs
      
    - This format provides quick scanning for busy developers while preserving detailed analysis
-   - Only include strategic sections when relevant to avoid formality for simple changes`
-    : `- Structure your tracking comment with clear sections when reviewing complex PRs`;
-
-  return `Your task is to conduct a thorough pull request review. Here's how to approach it:
-
-## Review Process:
-
-1. ${trackingCommentInstructions} 
-   - Read the PR description and understand the purpose of the changes
-   - Review the changed files to understand the scope of modifications
-   - Note any existing comments or previous review feedback${allowPrReviews ? "" : "\n   - Mark this task complete in your tracking comment: - [x] Initial Analysis"}
-
-3. **Code Review**:
-   - Examine each changed file for code quality, logic, and potential issues
-   - Look for bugs, security vulnerabilities, performance issues, or style problems
-   - Check for proper error handling, edge cases, and test coverage
-   - Verify that the implementation matches the PR description${allowPrReviews ? "" : "\n   - Update your tracking comment as you complete each aspect"}
-
-4. **Provide Feedback**:
-   ${feedbackInstructions}
-
-5. **Review Guidelines**:
-   - Be constructive and respectful in your feedback
-   - Explain the "why" behind your suggestions with specific benefits
-   - Consider the broader impact of changes on the codebase
-   - Balance thoroughness with practicality - focus on evidence-based concerns
-   - **ESSENTIAL: Include "What's Solid" section with specific positive reinforcement:**
-     - Acknowledge good patterns: "Excellent use of Promise.all here for parallel operations - much more efficient"
-     - Praise good tests: "The edge case tests for this function are fantastic and will prevent regressions"
-     - Recognize cleanups: "This refactoring greatly improves readability and maintainability"
-     - Highlight security improvements: "Good catch adding input validation here"${allowPrReviews ? "" : "\n   - Keep your tracking comment updated with checkbox status only (no review content)"}
-
-6. **Strategic Review Sections (Context-Aware)**:
-   ${structureInstructions}
+   - Only include strategic sections when relevant to avoid formality for simple changes
 
 7. **Final Steps**:
-   ${finalStepsInstructions}
-${allowPrReviews ? "" : "   - Put your overall assessment in the formal review (if available) or tracking comment (if not)"}${
-    customPrompt
-      ? `\n   - Ensure your review addresses the custom instructions provided above`
-      : ""
-  }
+   - Submit your formal review using mcp__github_review__submit_pr_review with your decision and ALL feedback
+   - Start with a **concise 2-3 sentence summary** stating your verdict and key reasoning
+   - Follow with **detailed analysis in expandable <details> section** for full transparency
+   - Use inline comments for specific line-by-line feedback
+   - No separate tracking comment management required${
+     customPrompt
+       ? `\n   - Ensure your review addresses the custom instructions provided above`
+       : ""
+   }
 
 Remember: Your goal is to help improve code quality while being helpful and collaborative with the development team.`;
 }
@@ -1319,11 +1259,19 @@ Remember: Your goal is to help improve code quality while being helpful and coll
  * Builds thread-aware review process instructions with thread management actions
  */
 function buildThreadAwareReviewProcessInstructions(
-  allowPrReviews: boolean,
   customPrompt?: string,
   threadActions?: {
-    threadsToResolve: Array<{ threadId: string; displayId: string; reason: string; suggestedMessage: string }>;
-    threadsToReplyTo: Array<{ threadId: string; displayId: string; suggestedReply: string }>;
+    threadsToResolve: Array<{
+      threadId: string;
+      displayId: string;
+      reason: string;
+      suggestedMessage: string;
+    }>;
+    threadsToReplyTo: Array<{
+      threadId: string;
+      displayId: string;
+      suggestedReply: string;
+    }>;
     newCommentsNeeded: boolean;
   },
 ): string {
@@ -1379,10 +1327,7 @@ IMPORTANT: Use the enhanced thread management tools with priority-based resoluti
 `
     : "";
 
-  const standardInstructions = buildReviewProcessInstructions(
-    allowPrReviews,
-    customPrompt,
-  );
+  const standardInstructions = buildReviewProcessInstructions(customPrompt);
 
   return `${threadManagementSection}${standardInstructions}
 
@@ -1422,7 +1367,6 @@ export async function generatePrReviewPromptThreadAware(
   context: PreparedContext,
   githubData: FetchDataResult,
   _useCommitSigning: boolean = false,
-  allowPrReviews: boolean = false,
   customPrompt?: string,
 ): Promise<string> {
   const { eventData } = context;
@@ -1445,14 +1389,11 @@ export async function generatePrReviewPromptThreadAware(
     // Build custom prompt section
     const customPromptSection = buildCustomPromptSection(customPrompt);
 
-    // Build review tools information
-    const reviewToolsInfo = allowPrReviews
-      ? buildPrReviewToolsInfo()
-      : buildCommentToolsInfo();
+    // Build review tools information - always use PR review tools in PR review mode
+    const reviewToolsInfo = buildPrReviewToolsInfo();
 
     // Build review process instructions with thread management
     const reviewProcessInstructions = buildThreadAwareReviewProcessInstructions(
-      allowPrReviews,
       customPrompt,
       threadActions,
     );
@@ -1497,7 +1438,6 @@ ${reviewProcessInstructions}`;
       context,
       githubData,
       _useCommitSigning,
-      allowPrReviews,
       customPrompt,
     );
   }
@@ -1511,7 +1451,6 @@ export function generatePrReviewPrompt(
   context: PreparedContext,
   githubData: FetchDataResult,
   _useCommitSigning: boolean = false,
-  allowPrReviews: boolean = false,
   customPrompt?: string,
 ): string {
   const { eventData } = context;
@@ -1532,16 +1471,12 @@ export function generatePrReviewPrompt(
   // Build custom prompt section
   const customPromptSection = buildCustomPromptSection(customPrompt);
 
-  // Build review tools information
-  const reviewToolsInfo = allowPrReviews
-    ? buildPrReviewToolsInfo()
-    : buildCommentToolsInfo();
+  // Build review tools information - always use PR review tools in PR review mode
+  const reviewToolsInfo = buildPrReviewToolsInfo();
 
   // Build review process instructions
-  const reviewProcessInstructions = buildReviewProcessInstructions(
-    allowPrReviews,
-    customPrompt,
-  );
+  const reviewProcessInstructions =
+    buildReviewProcessInstructions(customPrompt);
 
   // Generate the complete prompt
   const promptContent = `${getSystemPromptPrefix()} specialized in conducting thorough and helpful pull request reviews. You have been requested to review this pull request. Think carefully as you analyze the code changes and provide constructive feedback.

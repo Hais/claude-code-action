@@ -482,8 +482,10 @@ server.tool(
 
       // Handle specific "pending review" constraint error
       if (errorMessage.includes("User can only have one pending review")) {
-        console.warn("Detected pending review constraint error, attempting recovery");
-        
+        console.warn(
+          "Detected pending review constraint error, attempting recovery",
+        );
+
         // Attempt recovery by finding and handling pending review
         try {
           const recoveryOctokits = createOctokit(process.env.GITHUB_TOKEN!);
@@ -496,7 +498,9 @@ server.tool(
 
           if (pendingReviews.length > 0) {
             const pendingReview = pendingReviews[0]!;
-            console.log(`Found pending review ${pendingReview.id} during error recovery`);
+            console.log(
+              `Found pending review ${pendingReview.id} during error recovery`,
+            );
 
             const handleResult = await handleExistingPendingReview(
               recoveryOctokits,
@@ -704,13 +708,15 @@ async function getPendingReviews(
   owner: string,
   repo: string,
   pullNumber: number,
-): Promise<Array<{
-  id: number;
-  node_id: string;
-  state: string;
-  body: string;
-  user: { login: string };
-}>> {
+): Promise<
+  Array<{
+    id: number;
+    node_id: string;
+    state: string;
+    body: string;
+    user: { login: string };
+  }>
+> {
   try {
     const reviews = await octokits.rest.pulls.listReviews({
       owner,
@@ -720,7 +726,7 @@ async function getPendingReviews(
 
     // Filter for pending reviews by the authenticated user
     const pendingReviews = reviews.data.filter(
-      (review) => review.state === "PENDING"
+      (review) => review.state === "PENDING",
     );
 
     return pendingReviews.map((review) => ({
@@ -756,11 +762,11 @@ async function handleExistingPendingReview(
     // Strategy: Submit the existing pending review with merged content
     // Combine existing body with new body if both exist
     let mergedBody = "";
-    
+
     if (pendingReview.body && pendingReview.body.trim()) {
       mergedBody += pendingReview.body.trim();
     }
-    
+
     if (newReviewData.body && newReviewData.body.trim()) {
       if (mergedBody) {
         mergedBody += "\n\n---\n\n"; // Separator between old and new content
@@ -786,7 +792,7 @@ async function handleExistingPendingReview(
     };
   } catch (error) {
     console.warn("Failed to submit existing pending review:", error);
-    
+
     // Fallback: Try to dismiss the existing pending review and let caller create new one
     try {
       await octokits.rest.pulls.dismissReview({
@@ -796,12 +802,13 @@ async function handleExistingPendingReview(
         review_id: pendingReview.id,
         message: "Dismissed to create new review",
       });
-      
+
       return {
         success: false,
         action: "dismissed_pending_review",
         review_id: pendingReview.id,
-        message: "Dismissed existing pending review - caller should retry creating new review",
+        message:
+          "Dismissed existing pending review - caller should retry creating new review",
       };
     } catch (dismissError) {
       console.warn("Failed to dismiss pending review:", dismissError);

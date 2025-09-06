@@ -72,6 +72,7 @@ export const tagMode: Mode = {
     // Create initial tracking comment
     const commentData = await createInitialComment(octokit.rest, context);
     const commentId = commentData.id;
+    console.log("Created initial tracking comment for tag mode");
 
     const triggerTime = extractTriggerTimestamp(context);
 
@@ -120,8 +121,7 @@ export const tagMode: Mode = {
 
     // Don't output mcp_config separately anymore - include in claude_args
 
-    // Build claude_args for tag mode with required tools
-    // Tag mode REQUIRES these tools to function properly
+    // Build claude_args for tag mode with all capabilities plus thread reply tools
     const tagModeTools = [
       "Edit",
       "MultiEdit",
@@ -134,9 +134,12 @@ export const tagMode: Mode = {
       "mcp__github_ci__get_ci_status",
       "mcp__github_ci__get_workflow_run_details",
       "mcp__github_ci__download_job_log",
+      // Thread reply tools for PR review discussions
+      "mcp__github_review__reply_to_thread",
+      "mcp__github_inline_comment__create_inline_comment",
     ];
 
-    // Add git commands when not using commit signing
+    // Add git commands
     if (!context.inputs.useCommitSigning) {
       tagModeTools.push(
         "Bash(git add:*)",
@@ -181,12 +184,13 @@ export const tagMode: Mode = {
     };
   },
 
-  generatePrompt(
+  async generatePrompt(
     context: PreparedContext,
     githubData: FetchDataResult,
     useCommitSigning: boolean,
     allowPrReviews: boolean = false,
-  ): string {
+  ): Promise<string> {
+    // Generate standard tag mode prompt with thread reply capabilities
     const defaultPrompt = generateDefaultPrompt(
       context,
       githubData,
@@ -194,10 +198,23 @@ export const tagMode: Mode = {
       allowPrReviews,
     );
 
+    // Add thread reply instructions
+    const threadReplyInstructions = `
+
+# PR Review Thread Discussions
+
+When responding to PR review comments or participating in review thread discussions:
+
+- Use \`mcp__github_review__reply_to_thread\` to reply directly to specific review comment threads
+- Use \`mcp__github_inline_comment__create_inline_comment\` to create new inline comments on specific lines
+- These tools are available alongside all standard implementation capabilities
+- You can still modify files, run CI checks, and perform all other tag mode functions as needed`;
+
     // If a custom prompt is provided, inject it into the tag mode prompt
     if (context.githubContext?.inputs?.prompt) {
       return (
         defaultPrompt +
+        threadReplyInstructions +
         `
 
 <custom_instructions>
@@ -206,7 +223,7 @@ ${context.githubContext.inputs.prompt}
       );
     }
 
-    return defaultPrompt;
+    return defaultPrompt + threadReplyInstructions;
   },
 
   getSystemPrompt() {

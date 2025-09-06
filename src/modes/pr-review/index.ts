@@ -82,6 +82,9 @@ export const prReviewMode: Mode = {
   },
 
   shouldCreateTrackingComment() {
+    // This method is called from within prepare() where context is available
+    // In PR review mode, tracking comments are conditionally created based on allowPrReviews
+    // The actual logic is handled in the prepare() method
     return true;
   },
 
@@ -98,9 +101,14 @@ export const prReviewMode: Mode = {
     // Check if actor is human
     await checkHumanActor(octokit.rest, context);
 
-    // Create initial tracking comment
-    const commentData = await createInitialComment(octokit.rest, context);
-    const commentId = commentData.id;
+    // Create initial tracking comment (conditionally)
+    // Skip tracking comment when allow_pr_reviews is enabled - use formal reviews instead
+    let commentId: number | undefined;
+    let commentData: any | undefined;
+    if (!context.inputs.allowPrReviews) {
+      commentData = await createInitialComment(octokit.rest, context);
+      commentId = commentData.id;
+    }
 
     const githubData = await fetchGitHubData({
       octokits: octokit, // cspell:disable-line
@@ -116,7 +124,7 @@ export const prReviewMode: Mode = {
     // Configure git authentication if not using commit signing
     if (!context.inputs.useCommitSigning) {
       try {
-        await configureGitAuth(githubToken, context, commentData.user);
+        await configureGitAuth(githubToken, context, commentData?.user);
       } catch (error) {
         console.error("Failed to configure git authentication:", error);
         throw error;
@@ -134,6 +142,7 @@ export const prReviewMode: Mode = {
 
     // Build claude_args for PR review mode with all required tools
     // PR review mode includes all base tools plus review-specific tools
+    // Note: Tracking comment tools are excluded as PR review mode uses formal GitHub reviews
     const prReviewModeTools = [
       "Edit",
       "MultiEdit",
@@ -142,7 +151,6 @@ export const prReviewMode: Mode = {
       "LS",
       "Read",
       "Write",
-      "mcp__github_comment__update_claude_comment",
     ];
 
     // Add PR review specific tools - always enabled for PR review mode
@@ -189,7 +197,7 @@ export const prReviewMode: Mode = {
       repo: context.repository.repo,
       branch: branchInfo.currentBranch,
       baseBranch: branchInfo.baseBranch,
-      claudeCommentId: commentId.toString(),
+      claudeCommentId: commentId?.toString() || "",
       allowedTools: prReviewModeTools,
       context,
     });
@@ -230,7 +238,6 @@ export const prReviewMode: Mode = {
       context,
       githubData,
       useCommitSigning,
-      true, // PR review mode always enables PR review tools
       context.prompt, // Custom prompt injection
     );
   },

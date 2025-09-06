@@ -47,19 +47,26 @@ export function extractTriggerTimestamp(
 /**
  * Filters comments to only include those that existed in their final state before the trigger time.
  * This prevents malicious actors from editing comments after the trigger to inject harmful content.
+ * Exception: Always includes the specific triggering comment if triggerCommentId is provided.
  *
  * @param comments - Array of GitHub comments to filter
  * @param triggerTime - ISO timestamp of when the trigger comment was created
+ * @param triggerCommentId - Optional ID of the specific triggering comment to always include
  * @returns Filtered array of comments that were created and last edited before trigger time
  */
 export function filterCommentsToTriggerTime<
-  T extends { createdAt: string; updatedAt?: string; lastEditedAt?: string },
->(comments: T[], triggerTime: string | undefined): T[] {
+  T extends { createdAt: string; updatedAt?: string; lastEditedAt?: string; databaseId?: string },
+>(comments: T[], triggerTime: string | undefined, triggerCommentId?: number): T[] {
   if (!triggerTime) return comments;
 
   const triggerTimestamp = new Date(triggerTime).getTime();
 
   return comments.filter((comment) => {
+    // If this is the specific triggering comment, always include it
+    if (triggerCommentId && comment.databaseId === triggerCommentId.toString()) {
+      return true;
+    }
+
     // Comment must have been created before trigger (not at or after)
     const createdTimestamp = new Date(comment.createdAt).getTime();
     if (createdTimestamp >= triggerTimestamp) {
@@ -118,6 +125,7 @@ type FetchDataParams = {
   isPR: boolean;
   triggerUsername?: string;
   triggerTime?: string;
+  triggerCommentId?: number;
 };
 
 export type GitHubFileWithSHA = GitHubFile & {
@@ -146,6 +154,7 @@ export async function fetchGitHubData({
   isPR,
   triggerUsername,
   triggerTime,
+  triggerCommentId,
 }: FetchDataParams): Promise<FetchDataResult> {
   const [owner, repo] = repository.split("/");
   if (!owner || !repo) {
@@ -176,6 +185,7 @@ export async function fetchGitHubData({
         comments = filterCommentsToTriggerTime(
           pullRequest.comments?.nodes || [],
           triggerTime,
+          triggerCommentId,
         );
         reviewData = pullRequest.reviews || [];
 
@@ -199,6 +209,7 @@ export async function fetchGitHubData({
         comments = filterCommentsToTriggerTime(
           contextData?.comments?.nodes || [],
           triggerTime,
+          triggerCommentId,
         );
 
         console.log(`Successfully fetched issue #${prNumber} data`);
@@ -272,6 +283,7 @@ export async function fetchGitHubData({
   const filteredReviewComments = filterCommentsToTriggerTime(
     allReviewComments,
     triggerTime,
+    triggerCommentId,
   );
 
   const reviewComments: CommentWithImages[] = filteredReviewComments
