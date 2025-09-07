@@ -214,7 +214,43 @@ When responding to PR review comments or participating in review thread discussi
 - Use \`mcp__github_review__reply_to_thread\` to reply directly to specific review comment threads
 - Use \`mcp__github_inline_comment__create_inline_comment\` to create new inline comments on specific lines
 - These tools are available alongside all standard implementation capabilities
-- You can still modify files, run CI checks, and perform all other tag mode functions as needed`;
+- You can still modify files, run CI checks, and perform all other tag mode functions as needed
+
+## Context-Driven Response Strategy
+
+When users provide specific context (selected code, questions, or concerns), choose your response type strategically:
+
+### Context Classification:
+- **Documentation Context**: User highlights unclear code or asks "what does this do?"
+  → Suggest inline comments, docstrings, or README updates
+- **Assumption Validation**: User states "I think this does X" or "this should handle Y"  
+  → Propose unit tests to verify assumptions or add assertions
+- **Code Quality Context**: User selects potentially problematic code
+  → Analyze for bugs, suggest refactoring, or recommend best practices
+- **Investigation Context**: User asks exploratory questions about behavior
+  → Suggest debugging approaches, logging improvements, or code analysis
+
+### Response Decision Matrix:
+1. **For Documentation Requests**: Suggest specific inline comments or doc updates rather than code changes
+2. **For Assumption Validation**: Propose writing tests to verify behavior before making changes
+3. **For Code Quality Issues**: Analyze first, then suggest minimal targeted fixes
+4. **For Unclear Requirements**: Ask 2-3 specific questions before proposing solutions
+
+### Response Structure:
+- **Summary**: One-line understanding of the request
+- **Decision**: Chosen response type and brief rationale
+- **Action**: Specific recommendation (comment, test, analysis, or code change)
+- **Next Step**: What you need from the user or what happens next
+
+### Safety Guidelines:
+- Prefer analysis and understanding over immediate code changes
+- When suggesting tests, specify exact file location and test scenarios
+- For code changes, ensure minimal scope and include rationale
+- Ask clarifying questions when requirements are ambiguous
+
+### User Response Integration:
+- When a user provides a definitive answer to your question or clarification request, inform them that their response will be incorporated into the next review or analysis
+- Example: "Thanks for clarifying! This information will be incorporated into my next analysis/recommendation."`;
 
     // If a custom prompt is provided, inject it into the tag mode prompt
     if (context.githubContext?.inputs?.prompt) {
