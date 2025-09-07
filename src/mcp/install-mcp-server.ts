@@ -203,7 +203,7 @@ export async function prepareMcpConfig(
       };
     }
 
-     // CI server is included when:
+    // CI server is included when:
     // - In tag mode: when we have a workflow token and context is a PR
     // - In agent mode: same conditions PLUS explicit CI tools in allowedTools
     const hasWorkflowToken = !!process.env.DEFAULT_WORKFLOW_TOKEN;
