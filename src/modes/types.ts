@@ -60,14 +60,14 @@ export type Mode = {
 
   /**
    * Generates the prompt for this mode.
-   * @returns The complete prompt string
+   * @returns The complete prompt string or a promise resolving to it
    */
   generatePrompt(
     context: PreparedContext,
     githubData: FetchDataResult,
     useCommitSigning: boolean,
     allowPrReviews?: boolean,
-  ): string;
+  ): string | Promise<string>;
 
   /**
    * Prepares the GitHub environment for this mode.
