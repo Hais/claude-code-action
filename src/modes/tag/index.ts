@@ -11,7 +11,10 @@ import {
   extractTriggerTimestamp,
 } from "../../github/data/fetcher";
 import { createPrompt, generateDefaultPrompt } from "../../create-prompt";
-import { isEntityContext } from "../../github/context";
+import {
+  isEntityContext,
+  isPullRequestReviewCommentEvent,
+} from "../../github/context";
 import type { PreparedContext } from "../../create-prompt/types";
 import type { FetchDataResult } from "../../github/data/fetcher";
 import { parseAllowedTools } from "../agent/parse-tools";
@@ -73,8 +76,14 @@ export const tagMode: Mode = {
     // Create initial tracking comment
     const commentData = await createInitialComment(octokit.rest, context);
     const commentId = commentData.id;
+    console.log("Created initial tracking comment for tag mode");
 
     const triggerTime = extractTriggerTimestamp(context);
+
+    // Extract triggerCommentId for PR review comment contexts
+    const triggerCommentId = isPullRequestReviewCommentEvent(context)
+      ? context.payload.comment.id
+      : undefined;
 
     const githubData = await fetchGitHubData({
       octokits: octokit,
@@ -83,6 +92,7 @@ export const tagMode: Mode = {
       isPR: context.isPR,
       triggerUsername: context.actor,
       triggerTime,
+      triggerCommentId,
     });
 
     // Setup branch
@@ -118,8 +128,7 @@ export const tagMode: Mode = {
       (tool) => tool.startsWith("mcp__github_"),
     );
 
-    // Build claude_args for tag mode with required tools
-    // Tag mode REQUIRES these tools to function properly
+    // Build claude_args for tag mode with all capabilities plus thread reply tools
     const tagModeTools = [
       "Edit",
       "MultiEdit",
@@ -132,10 +141,13 @@ export const tagMode: Mode = {
       "mcp__github_ci__get_ci_status",
       "mcp__github_ci__get_workflow_run_details",
       "mcp__github_ci__download_job_log",
+      // Thread reply tools for PR review discussions
+      "mcp__github_review__reply_to_thread",
+      "mcp__github_inline_comment__create_inline_comment",
       ...userAllowedMCPTools,
     ];
 
-    // Add git commands when not using commit signing
+    // Add git commands
     if (!context.inputs.useCommitSigning) {
       tagModeTools.push(
         "Bash(git add:*)",
@@ -191,12 +203,13 @@ export const tagMode: Mode = {
     };
   },
 
-  generatePrompt(
+  async generatePrompt(
     context: PreparedContext,
     githubData: FetchDataResult,
     useCommitSigning: boolean,
     allowPrReviews: boolean = false,
-  ): string {
+  ): Promise<string> {
+    // Generate standard tag mode prompt with thread reply capabilities
     const defaultPrompt = generateDefaultPrompt(
       context,
       githubData,
@@ -204,10 +217,59 @@ export const tagMode: Mode = {
       allowPrReviews,
     );
 
+    // Add thread reply instructions
+    const threadReplyInstructions = `
+
+# PR Review Thread Discussions
+
+When responding to PR review comments or participating in review thread discussions:
+
+- Use \`mcp__github_review__reply_to_thread\` to reply directly to specific review comment threads
+- Use \`mcp__github_inline_comment__create_inline_comment\` to create new inline comments on specific lines
+- These tools are available alongside all standard implementation capabilities
+- You can still modify files, run CI checks, and perform all other tag mode functions as needed
+
+## Context-Driven Response Strategy
+
+When users provide specific context (selected code, questions, or concerns), choose your response type strategically:
+
+### Context Classification:
+- **Documentation Context**: User highlights unclear code or asks "what does this do?"
+  → Suggest inline comments, docstrings, or README updates
+- **Assumption Validation**: User states "I think this does X" or "this should handle Y"  
+  → Propose unit tests to verify assumptions or add assertions
+- **Code Quality Context**: User selects potentially problematic code
+  → Analyze for bugs, suggest refactoring, or recommend best practices
+- **Investigation Context**: User asks exploratory questions about behavior
+  → Suggest debugging approaches, logging improvements, or code analysis
+
+### Response Decision Matrix:
+1. **For Documentation Requests**: Suggest specific inline comments or doc updates rather than code changes
+2. **For Assumption Validation**: Propose writing tests to verify behavior before making changes
+3. **For Code Quality Issues**: Analyze first, then suggest minimal targeted fixes
+4. **For Unclear Requirements**: Ask 2-3 specific questions before proposing solutions
+
+### Response Structure:
+- **Summary**: One-line understanding of the request
+- **Decision**: Chosen response type and brief rationale
+- **Action**: Specific recommendation (comment, test, analysis, or code change)
+- **Next Step**: What you need from the user or what happens next
+
+### Safety Guidelines:
+- Prefer analysis and understanding over immediate code changes
+- When suggesting tests, specify exact file location and test scenarios
+- For code changes, ensure minimal scope and include rationale
+- Ask clarifying questions when requirements are ambiguous
+
+### User Response Integration:
+- When a user provides a definitive answer to your question or clarification request, inform them that their response will be incorporated into the next review or analysis
+- Example: "Thanks for clarifying! This information will be incorporated into my next analysis/recommendation."`;
+
     // If a custom prompt is provided, inject it into the tag mode prompt
     if (context.githubContext?.inputs?.prompt) {
       return (
         defaultPrompt +
+        threadReplyInstructions +
         `
 
 <custom_instructions>
@@ -216,7 +278,7 @@ ${context.githubContext.inputs.prompt}
       );
     }
 
-    return defaultPrompt;
+    return defaultPrompt + threadReplyInstructions;
   },
 
   getSystemPrompt() {
