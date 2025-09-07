@@ -11,7 +11,10 @@ import {
   extractTriggerTimestamp,
 } from "../../github/data/fetcher";
 import { createPrompt, generateDefaultPrompt } from "../../create-prompt";
-import { isEntityContext, isPullRequestReviewCommentEvent } from "../../github/context";
+import {
+  isEntityContext,
+  isPullRequestReviewCommentEvent,
+} from "../../github/context";
 import type { PreparedContext } from "../../create-prompt/types";
 import type { FetchDataResult } from "../../github/data/fetcher";
 
@@ -77,8 +80,8 @@ export const tagMode: Mode = {
     const triggerTime = extractTriggerTimestamp(context);
 
     // Extract triggerCommentId for PR review comment contexts
-    const triggerCommentId = isPullRequestReviewCommentEvent(context) 
-      ? context.payload.comment.id 
+    const triggerCommentId = isPullRequestReviewCommentEvent(context)
+      ? context.payload.comment.id
       : undefined;
 
     const githubData = await fetchGitHubData({

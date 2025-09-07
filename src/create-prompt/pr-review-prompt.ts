@@ -1051,6 +1051,37 @@ IMPORTANT: You are in PR review mode with formal review permissions enabled.
 - This targeted approach reduces API calls and speeds up your review process
 - For files without existing threads, proceed directly with standard review without calling get_file_comments
 
+**AI Review Decision Framework:**
+Use this tiered approach to determine your review action:
+
+**AUTO-APPROVE (use APPROVE) when ALL conditions met:**
+- Change scope: Documentation-only, typos, comments, changelog updates
+- Technical: Pure formatting/linting fixes with tool-generated diffs
+- Tests: Test-only additions that don't alter production logic  
+- Dependencies: Patch/minor version bumps with clean security scans
+- Preconditions: Green CI, no security findings, small diff (<50 LOC), clear description
+
+**REQUEST CHANGES for objective, fixable issues:**
+- Missing tests for bug fixes or new functionality
+- Security gaps: Missing auth/authorization, input validation
+- API changes lacking semver compliance or migration docs
+- Clear correctness bugs or logical errors
+- Performance issues with significant impact
+
+**COMMENT for subjective feedback:**
+- Style suggestions and code organization
+- Alternative implementation approaches
+- Non-blocking architectural improvements
+- Questions needing clarification
+- When confidence is moderate but not definitive
+
+**DEFER TO HUMAN (avoid auto-decisions) for:**
+- Security-sensitive paths: auth/, crypto/, payment/, user data handling
+- Breaking changes: Major version bumps, API contract changes
+- Infrastructure: CI/CD, deployment configs, environment settings  
+- Large changes: >500 LOC, architectural refactoring, cross-service changes
+- Ambiguous cases: Low test coverage, flaky CI, unclear requirements
+
 **Severity Classification System:**
 Use these severity levels with human-friendly tagging for all review feedback:
 - 🔴 **Blocker**: Correctness, security vulnerabilities, breaking changes, data loss risk → REQUEST_CHANGES
@@ -1196,6 +1227,9 @@ function buildReviewProcessInstructions(customPrompt?: string): string {
    - Explain the "why" behind your suggestions with specific benefits
    - Consider the broader impact of changes on the codebase
    - Balance thoroughness with practicality - focus on evidence-based concerns
+   - **Apply the AI Review Decision Framework above to determine APPROVE/REQUEST_CHANGES/COMMENT**
+   - **Use confidence-based escalation**: When uncertain about impact, lean toward COMMENT rather than blocking
+   - **Prioritize safety**: For security-sensitive areas, defer complex decisions to human reviewers
    - **ESSENTIAL: Include "What's Solid" section with specific positive reinforcement:**
      - Acknowledge good patterns: "Excellent use of Promise.all here for parallel operations - much more efficient"
      - Praise good tests: "The edge case tests for this function are fantastic and will prevent regressions"
@@ -1252,7 +1286,13 @@ function buildReviewProcessInstructions(customPrompt?: string): string {
        : ""
    }
 
-Remember: Your goal is to help improve code quality while being helpful and collaborative with the development team.`;
+**Critical Decision Points:**
+- **When in doubt about approval**: Use COMMENT instead of APPROVE to get human input
+- **For security/infrastructure changes**: Always lean toward human oversight rather than auto-approval
+- **For large architectural changes**: Acknowledge the scope and suggest additional review if needed
+- **Confidence threshold**: Only use APPROVE when you're highly confident the changes are safe and correct
+
+Remember: Your goal is to help improve code quality while being helpful and collaborative with the development team. When uncertain about complex decisions, it's better to provide thoughtful feedback via COMMENT and let human reviewers make the final call.`;
 }
 
 /**

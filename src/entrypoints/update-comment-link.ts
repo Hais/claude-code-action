@@ -6,10 +6,7 @@ import {
   updateCommentBody,
   type CommentUpdateInput,
 } from "../github/operations/comment-logic";
-import {
-  parseGitHubContext,
-  isEntityContext,
-} from "../github/context";
+import { parseGitHubContext, isEntityContext } from "../github/context";
 import { GITHUB_SERVER_URL } from "../github/api/config";
 import { checkAndCommitOrDeleteBranch } from "../github/operations/branch-cleanup";
 import {
@@ -46,8 +43,9 @@ async function run() {
     try {
       // Check if the comment was actually created as a PR review comment
       // This accounts for fallback scenarios where PR review comment creation fails
-      const commentIsPRReview = process.env.CLAUDE_COMMENT_IS_PR_REVIEW === "true";
-      
+      const commentIsPRReview =
+        process.env.CLAUDE_COMMENT_IS_PR_REVIEW === "true";
+
       if (commentIsPRReview) {
         // For PR review comments, use the pulls API
         console.log(`Fetching PR review comment ${commentId}`);

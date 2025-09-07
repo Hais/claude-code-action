@@ -55,15 +55,27 @@ export function extractTriggerTimestamp(
  * @returns Filtered array of comments that were created and last edited before trigger time
  */
 export function filterCommentsToTriggerTime<
-  T extends { createdAt: string; updatedAt?: string; lastEditedAt?: string; databaseId?: string },
->(comments: T[], triggerTime: string | undefined, triggerCommentId?: number): T[] {
+  T extends {
+    createdAt: string;
+    updatedAt?: string;
+    lastEditedAt?: string;
+    databaseId?: string;
+  },
+>(
+  comments: T[],
+  triggerTime: string | undefined,
+  triggerCommentId?: number,
+): T[] {
   if (!triggerTime) return comments;
 
   const triggerTimestamp = new Date(triggerTime).getTime();
 
   return comments.filter((comment) => {
     // If this is the specific triggering comment, always include it
-    if (triggerCommentId && comment.databaseId === triggerCommentId.toString()) {
+    if (
+      triggerCommentId &&
+      comment.databaseId === triggerCommentId.toString()
+    ) {
       return true;
     }
 
