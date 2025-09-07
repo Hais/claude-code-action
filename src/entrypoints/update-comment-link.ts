@@ -6,7 +6,11 @@ import {
   updateCommentBody,
   type CommentUpdateInput,
 } from "../github/operations/comment-logic";
-import { parseGitHubContext, isEntityContext } from "../github/context";
+import {
+  parseGitHubContext,
+  isPullRequestReviewCommentEvent,
+  isEntityContext,
+} from "../github/context";
 import { GITHUB_SERVER_URL } from "../github/api/config";
 import { checkAndCommitOrDeleteBranch } from "../github/operations/branch-cleanup";
 import {
@@ -41,12 +45,9 @@ async function run() {
     let isPRReviewComment = false;
 
     try {
-      // Check if the comment was actually created as a PR review comment
-      // This accounts for fallback scenarios where PR review comment creation fails
-      const commentIsPRReview =
-        process.env.CLAUDE_COMMENT_IS_PR_REVIEW === "true";
-
-      if (commentIsPRReview) {
+      // GitHub has separate ID namespaces for review comments and issue comments
+      // We need to use the correct API based on the event type
+      if (isPullRequestReviewCommentEvent(context)) {
         // For PR review comments, use the pulls API
         console.log(`Fetching PR review comment ${commentId}`);
         const { data: prComment } = await octokit.rest.pulls.getReviewComment({
@@ -57,8 +58,10 @@ async function run() {
         comment = prComment;
         isPRReviewComment = true;
         console.log("Successfully fetched as PR review comment");
-      } else {
-        // For issue comments, use the issues API
+      }
+
+      // For all other event types, use the issues API
+      if (!comment) {
         console.log(`Fetching issue comment ${commentId}`);
         const { data: issueComment } = await octokit.rest.issues.getComment({
           owner,
