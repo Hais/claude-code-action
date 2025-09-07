@@ -85,13 +85,6 @@ export async function createInitialComment(
     const githubOutput = process.env.GITHUB_OUTPUT!;
     appendFileSync(githubOutput, `claude_comment_id=${response.data.id}\n`);
 
-    // Signal that this is a PR review comment (not a fallback)
-    if (isPullRequestReviewCommentEvent(context)) {
-      appendFileSync(githubOutput, `claude_comment_is_pr_review=true\n`);
-    } else {
-      appendFileSync(githubOutput, `claude_comment_is_pr_review=false\n`);
-    }
-
     console.log(`✅ Created initial comment with ID: ${response.data.id}`);
     return response.data;
   } catch (error) {
@@ -108,9 +101,6 @@ export async function createInitialComment(
 
       const githubOutput = process.env.GITHUB_OUTPUT!;
       appendFileSync(githubOutput, `claude_comment_id=${response.data.id}\n`);
-
-      // Signal that this is a fallback issue comment (not a PR review comment)
-      appendFileSync(githubOutput, `claude_comment_is_pr_review=false\n`);
 
       console.log(`✅ Created fallback comment with ID: ${response.data.id}`);
       return response.data;

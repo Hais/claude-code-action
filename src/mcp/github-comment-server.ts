@@ -53,7 +53,7 @@ server.tool(
       });
 
       const isPullRequestReviewComment =
-        process.env.CLAUDE_COMMENT_IS_PR_REVIEW === "true";
+        eventName === "pull_request_review_comment";
 
       const sanitizedBody = sanitizeContent(body);
 
