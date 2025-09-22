@@ -7,6 +7,7 @@ import { GITHUB_API_URL } from "../github/api/config";
 import { Octokit } from "@octokit/rest";
 import { updateClaudeComment } from "../github/operations/comments/update-claude-comment";
 import { sanitizeContent } from "../github/utils/sanitizer";
+import { captureMcpError, addBreadcrumb } from "../utils/sentry";
 
 // Get repository information from environment variables
 const REPO_OWNER = process.env.REPO_OWNER;
@@ -32,6 +33,12 @@ server.tool(
   },
   async ({ body }) => {
     try {
+      addBreadcrumb("MCP tool called", "mcp", {
+        tool: "update_claude_comment",
+        server: "github-comment",
+        bodyLength: body?.length || 0,
+      });
+
       const githubToken = process.env.GITHUB_TOKEN;
       const claudeCommentId = process.env.CLAUDE_COMMENT_ID;
       const eventName = process.env.GITHUB_EVENT_NAME;
@@ -65,6 +72,12 @@ server.tool(
         isPullRequestReviewComment,
       });
 
+      addBreadcrumb("Comment updated successfully", "mcp", {
+        tool: "update_claude_comment",
+        commentId,
+        resultStatus: "success",
+      });
+
       return {
         content: [
           {
@@ -74,6 +87,19 @@ server.tool(
         ],
       };
     } catch (error) {
+      // Capture MCP tool errors with full context
+      captureMcpError(error, {
+        toolName: "update_claude_comment",
+        serverType: "github-comment",
+        operation: "comment_update",
+        parameters: {
+          bodyLength: body?.length || 0,
+          repository: `${REPO_OWNER}/${REPO_NAME}`,
+          commentId: process.env.CLAUDE_COMMENT_ID,
+          eventName: process.env.GITHUB_EVENT_NAME,
+        },
+      });
+
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       return {

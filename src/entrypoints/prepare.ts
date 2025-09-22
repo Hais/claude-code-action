@@ -13,6 +13,7 @@ import { parseGitHubContext, isEntityContext } from "../github/context";
 import { getMode } from "../modes/registry";
 import { prepare } from "../prepare";
 import { collectActionInputsPresence } from "./collect-inputs";
+import { initSentry, captureError, addBreadcrumb } from "../utils/sentry";
 
 async function run() {
   try {
@@ -24,7 +25,17 @@ async function run() {
     // Auto-detect mode based on context
     const mode = getMode(context);
 
+    // Initialize Sentry for error tracking (optional)
+    initSentry({ context, mode });
+    
+    addBreadcrumb("Action preparation started", "prepare", {
+      mode: mode.name,
+      event: context.eventName,
+      repository: context.repository,
+    });
+
     // Setup GitHub token
+    addBreadcrumb("Setting up GitHub token", "auth");
     const githubToken = await setupGitHubToken();
     const octokit = createOctokit(githubToken);
 
@@ -32,6 +43,12 @@ async function run() {
     if (isEntityContext(context)) {
       // Check if github_token was provided as input (not from app)
       const githubTokenProvided = !!process.env.OVERRIDE_GITHUB_TOKEN;
+
+      addBreadcrumb("Checking write permissions", "permissions", {
+        actor: context.actor,
+        repository: context.repository,
+      });
+
       const hasWritePermissions = await checkWritePermissions(
         octokit.rest,
         context,
@@ -46,6 +63,10 @@ async function run() {
     }
 
     // Check trigger conditions
+    addBreadcrumb("Checking trigger conditions", "validation", {
+      mode: mode.name,
+      prompt: context.inputs?.prompt ? "[PRESENT]" : "[ABSENT]",
+    });
     const containsTrigger = mode.shouldTrigger(context);
 
     // Debug logging
@@ -58,12 +79,14 @@ async function run() {
 
     if (!containsTrigger) {
       console.log("No trigger found, skipping remaining steps");
+      addBreadcrumb("No trigger found, action skipped", "validation");
       // Still set github_token output even when skipping
       core.setOutput("github_token", githubToken);
       return;
     }
 
     // Step 5: Use the new modular prepare function
+    addBreadcrumb("Starting preparation phase", "prepare");
     const result = await prepare({
       context,
       octokit,
@@ -90,6 +113,14 @@ async function run() {
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    // Capture error for Sentry with context
+    captureError(error, {
+      operation: "prepare",
+      phase: "initialization",
+      mode: "unknown", // Mode might not be available if error occurs early
+    });
+    
     core.setFailed(`Prepare step failed with error: ${errorMessage}`);
     // Also output the clean error message for the action to capture
     core.setOutput("prepare_error", errorMessage);

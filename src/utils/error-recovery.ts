@@ -3,6 +3,7 @@
  */
 
 import { retryWithBackoff, type RetryOptions } from "./retry";
+import { captureError, addBreadcrumb } from "./sentry";
 
 export type ErrorCategory =
   | "network" // Network/connectivity issues
@@ -160,13 +161,36 @@ export async function withErrorRecovery<T>(
       error instanceof Error ? error.message : String(error),
     );
 
+    // Add breadcrumb for error context
+    addBreadcrumb(
+      `Error in ${operationName}`,
+      "error",
+      {
+        operation: operationName,
+        category,
+        strategy: config.strategy,
+        isCritical,
+      },
+      "error",
+    );
+
     switch (config.strategy) {
       case "retry":
         try {
           console.log(`Retrying ${operationName} with recovery strategy...`);
+          addBreadcrumb(`Retrying ${operationName}`, "retry", { attempts: config.retryOptions?.maxAttempts });
           return await retryWithBackoff(operation, config.retryOptions);
         } catch (retryError) {
+          // Capture error after retry failure for critical operations
           if (isCritical) {
+            captureError(retryError, {
+              operation: "error_recovery",
+              phase: "retry_failed",
+              operationName,
+              category,
+              retryAttempts: config.retryOptions?.maxAttempts || 0,
+              recoveryStrategy: config.strategy,
+            });
             throw retryError;
           }
           console.warn(
@@ -187,6 +211,14 @@ export async function withErrorRecovery<T>(
 
       case "fail_fast":
       default:
+        // Capture critical errors that will cause failure
+        captureError(error, {
+          operation: "error_recovery",
+          phase: "fail_fast",
+          operationName,
+          category,
+          recoveryStrategy: config.strategy,
+        });
         throw error;
     }
   }
@@ -310,6 +342,14 @@ export class CircuitBreaker {
       console.warn(
         `Circuit breaker is now OPEN after ${this.failures} failures`,
       );
+      
+      // Capture circuit breaker trip as it indicates systemic issues
+      captureError(new Error("Circuit breaker tripped"), {
+        operation: "circuit_breaker",
+        phase: "trip",
+        failures: this.failures,
+        threshold: this.failureThreshold,
+      });
     }
   }
 
