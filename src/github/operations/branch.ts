@@ -12,6 +12,7 @@ import type { ParsedGitHubContext } from "../context";
 import type { GitHubPullRequest } from "../types";
 import type { Octokits } from "../api/client";
 import type { FetchDataResult } from "../data/fetcher";
+import { captureError, addBreadcrumb } from "../../utils/sentry";
 
 export type BranchInfo = {
   baseBranch: string;
@@ -100,6 +101,14 @@ export async function setupBranch(
   const newBranch = branchName.toLowerCase().substring(0, 50);
 
   try {
+    addBreadcrumb("Starting branch setup", "git", {
+      sourceBranch,
+      newBranch,
+      entityType,
+      entityNumber,
+      useCommitSigning: context.inputs.useCommitSigning,
+    });
+
     // Get the SHA of the source branch to verify it exists
     const sourceBranchRef = await octokits.rest.git.getRef({
       owner,
@@ -158,6 +167,19 @@ export async function setupBranch(
     };
   } catch (error) {
     console.error("Error in branch setup:", error);
+    
+    // Capture branch setup errors
+    captureError(error, {
+      operation: "branch_setup",
+      phase: "creation",
+      sourceBranch,
+      newBranch,
+      entityType,
+      entityNumber,
+      repository: `${owner}/${repo}`,
+      useCommitSigning: context.inputs.useCommitSigning,
+    });
+    
     process.exit(1);
   }
 }
