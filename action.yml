@@ -141,6 +141,9 @@ outputs:
   execution_file:
     description: "Path to the Claude Code execution output file"
     value: ${{ steps.claude-code.outputs.execution_file }}
+  step_summary:
+    description: "Path to the file containing the GitHub Step Summary content"
+    value: ${{ steps.set-step-summary-output.outputs.step_summary || '' }}
   branch_name:
     description: "The branch created by Claude Code for this execution"
     value: ${{ steps.prepare.outputs.CLAUDE_BRANCH }}
@@ -342,9 +345,14 @@ runs:
       if: steps.prepare.outputs.contains_trigger == 'true' && steps.claude-code.outputs.execution_file != ''
       shell: bash
       run: |
-        # Try to format the turns, but if it fails, dump the raw JSON
-        if bun run ${{ github.action_path }}/src/entrypoints/format-turns.ts "${{ steps.claude-code.outputs.execution_file }}" >> $GITHUB_STEP_SUMMARY 2>/dev/null; then
+        # Create temporary file for step summary content
+        STEP_SUMMARY_FILE="/tmp/claude-step-summary-${{ github.run_id }}-${{ github.run_attempt }}.md"
+
+        # Try to format the turns, but if it fails, dump the raw JSON to GITHUB_STEP_SUMMARY only
+        if bun run ${{ github.action_path }}/src/entrypoints/format-turns.ts "${{ steps.claude-code.outputs.execution_file }}" > "$STEP_SUMMARY_FILE" 2>/dev/null; then
           echo "Successfully formatted Claude Code report"
+          # Copy to GITHUB_STEP_SUMMARY
+          cat "$STEP_SUMMARY_FILE" >> $GITHUB_STEP_SUMMARY
         else
           echo "## Claude Code Report (Raw Output)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -353,7 +361,19 @@ runs:
           echo '```json' >> $GITHUB_STEP_SUMMARY
           cat "${{ steps.claude-code.outputs.execution_file }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+          # Don't create STEP_SUMMARY_FILE if formatting failed
+          rm -f "$STEP_SUMMARY_FILE"
         fi
+
+        # Store the temp file path for output
+        echo "STEP_SUMMARY_FILE=$STEP_SUMMARY_FILE" >> $GITHUB_ENV
+
+    - name: Set Step Summary Output
+      id: set-step-summary-output
+      if: steps.prepare.outputs.contains_trigger == 'true' && steps.claude-code.outputs.execution_file != ''
+      shell: bash
+      run: |
+        echo "step_summary=$STEP_SUMMARY_FILE" >> $GITHUB_OUTPUT
 
     - name: Revoke app token
       if: always() && inputs.github_token == '' && steps.prepare.outputs.skipped_due_to_workflow_validation_mismatch != 'true'
