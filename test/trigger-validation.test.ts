@@ -11,6 +11,8 @@ import {
   mockIssueOpenedContext,
   mockPullRequestReviewContext,
   mockPullRequestReviewCommentContext,
+  mockPullRequestReviewRequestedContext,
+  defaultStickyCommentInputs,
 } from "./mockContext";
 import type {
   IssueCommentEvent,
@@ -34,6 +36,7 @@ describe("checkContainsTrigger", () => {
           labelTrigger: "",
           branchPrefix: "claude/",
           useStickyComment: false,
+          ...defaultStickyCommentInputs,
           useCommitSigning: false,
           allowedBots: "",
         },
@@ -62,6 +65,7 @@ describe("checkContainsTrigger", () => {
           labelTrigger: "",
           branchPrefix: "claude/",
           useStickyComment: false,
+          ...defaultStickyCommentInputs,
           useCommitSigning: false,
           allowedBots: "",
         },
@@ -108,6 +112,52 @@ describe("checkContainsTrigger", () => {
         },
       } as ParsedGitHubContext;
 
+      expect(checkContainsTrigger(context)).toBe(false);
+    });
+  });
+
+  describe("reviewer trigger", () => {
+    it("should return true when review is requested from the trigger user", () => {
+      const context = mockPullRequestReviewRequestedContext;
+      expect(checkContainsTrigger(context)).toBe(true);
+    });
+
+    it("should handle @ symbol from reviewer trigger", () => {
+      const context = {
+        ...mockPullRequestReviewRequestedContext,
+        inputs: {
+          ...mockPullRequestReviewRequestedContext.inputs,
+          reviewerTrigger: "claude-bot",
+        },
+      };
+      expect(checkContainsTrigger(context)).toBe(true);
+    });
+
+    it("should return false when review is requested from a different user", () => {
+      const context = {
+        ...mockPullRequestReviewRequestedContext,
+        payload: {
+          ...mockPullRequestReviewRequestedContext.payload,
+          requested_reviewer: {
+            login: "otherUser",
+            id: 88888,
+            avatar_url: "https://avatars.githubusercontent.com/u/88888",
+            html_url: "https://github.com/otherUser",
+          },
+        },
+      } as ParsedGitHubContext;
+
+      expect(checkContainsTrigger(context)).toBe(false);
+    });
+
+    it("should return false when reviewer trigger is empty", () => {
+      const context = {
+        ...mockPullRequestReviewRequestedContext,
+        inputs: {
+          ...mockPullRequestReviewRequestedContext.inputs,
+          reviewerTrigger: "",
+        },
+      };
       expect(checkContainsTrigger(context)).toBe(false);
     });
   });
@@ -274,6 +324,7 @@ describe("checkContainsTrigger", () => {
           labelTrigger: "",
           branchPrefix: "claude/",
           useStickyComment: false,
+          ...defaultStickyCommentInputs,
           useCommitSigning: false,
           allowedBots: "",
         },
@@ -303,6 +354,7 @@ describe("checkContainsTrigger", () => {
           labelTrigger: "",
           branchPrefix: "claude/",
           useStickyComment: false,
+          ...defaultStickyCommentInputs,
           useCommitSigning: false,
           allowedBots: "",
         },
@@ -332,6 +384,7 @@ describe("checkContainsTrigger", () => {
           labelTrigger: "",
           branchPrefix: "claude/",
           useStickyComment: false,
+          ...defaultStickyCommentInputs,
           useCommitSigning: false,
           allowedBots: "",
         },
