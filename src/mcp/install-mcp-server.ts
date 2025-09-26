@@ -85,6 +85,10 @@ export async function prepareMcpConfig(
       tool.startsWith("mcp__github_ci__"),
     );
 
+    const hasGitHubReviewTools = allowedToolsList.some((tool) =>
+      tool.startsWith("mcp__github_review__"),
+    );
+
     const baseMcpConfig: { mcpServers: Record<string, unknown> } = {
       mcpServers: {},
     };
@@ -145,6 +149,52 @@ export async function prepareMcpConfig(
         args: [
           "run",
           `${process.env.GITHUB_ACTION_PATH}/src/mcp/github-inline-comment-server.ts`,
+        ],
+        env: {
+          GITHUB_TOKEN: githubToken,
+          REPO_OWNER: owner,
+          REPO_NAME: repo,
+          PR_NUMBER: context.entityNumber?.toString() || "",
+          GITHUB_API_URL: GITHUB_API_URL,
+        },
+      };
+    }
+
+    // Include review server for PRs when PR reviews are explicitly enabled OR when review tools are requested
+    if (
+      isEntityContext(context) &&
+      context.isPR &&
+      (context.inputs.allowPrReviews || hasGitHubReviewTools) &&
+      (hasGitHubMcpTools || hasInlineCommentTools || hasGitHubReviewTools)
+    ) {
+      baseMcpConfig.mcpServers.github_review = {
+        command: "bun",
+        args: [
+          "run",
+          `${process.env.GITHUB_ACTION_PATH}/src/mcp/github-review-server.ts`,
+        ],
+        env: {
+          GITHUB_TOKEN: githubToken,
+          REPO_OWNER: owner,
+          REPO_NAME: repo,
+          PR_NUMBER: context.entityNumber?.toString() || "",
+          GITHUB_API_URL: GITHUB_API_URL,
+        },
+      };
+    }
+
+    // Include review server for PRs when PR reviews are explicitly enabled
+    if (
+      isEntityContext(context) &&
+      context.isPR &&
+      context.inputs.allowPrReviews &&
+      (hasGitHubMcpTools || hasInlineCommentTools)
+    ) {
+      baseMcpConfig.mcpServers.github_review = {
+        command: "bun",
+        args: [
+          "run",
+          `${process.env.GITHUB_ACTION_PATH}/src/mcp/github-review-server.ts`,
         ],
         env: {
           GITHUB_TOKEN: githubToken,

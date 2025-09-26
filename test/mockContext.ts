@@ -9,22 +9,31 @@ import type {
   PullRequestEvent,
   PullRequestReviewEvent,
   PullRequestReviewCommentEvent,
+  PullRequestReviewRequestedEvent,
 } from "@octokit/webhooks-types";
 import { CLAUDE_APP_BOT_ID, CLAUDE_BOT_LOGIN } from "../src/github/constants";
+
+export const defaultStickyCommentInputs = {
+  stickyCommentAppBotId: 209825114,
+  stickyCommentAppBotName: "claude",
+};
 
 const defaultInputs = {
   prompt: "",
   triggerPhrase: "/claude",
   assigneeTrigger: "",
+  reviewerTrigger: "",
   labelTrigger: "",
   branchPrefix: "claude/",
   useStickyComment: false,
+  ...defaultStickyCommentInputs,
   useCommitSigning: false,
   botId: String(CLAUDE_APP_BOT_ID),
   botName: CLAUDE_BOT_LOGIN,
   allowedBots: "",
   allowedNonWriteUsers: "",
   trackProgress: false,
+  allowPrReviews: false,
 };
 
 const defaultRepository = {
@@ -450,4 +459,49 @@ export const mockPullRequestReviewCommentContext: ParsedGitHubContext = {
   entityNumber: 999,
   isPR: true,
   inputs: defaultInputs,
+};
+
+export const mockPullRequestReviewRequestedContext: ParsedGitHubContext = {
+  runId: "1234567890",
+  eventName: "pull_request",
+  eventAction: "review_requested",
+  repository: defaultRepository,
+  actor: "admin-user",
+  payload: {
+    action: "review_requested",
+    number: 789,
+    pull_request: {
+      number: 789,
+      title: "Feature: Add new authentication method",
+      body: "This PR adds OAuth2 support for better user authentication",
+      user: {
+        login: "feature-dev",
+        id: 77777,
+        avatar_url: "https://avatars.githubusercontent.com/u/77777",
+        html_url: "https://github.com/feature-dev",
+      },
+      created_at: "2024-01-15T11:00:00Z",
+      updated_at: "2024-01-15T14:30:00Z",
+      html_url: "https://github.com/test-owner/test-repo/pull/789",
+      state: "open",
+      draft: false,
+    } as any,
+    requested_reviewer: {
+      login: "claude-bot",
+      id: 99999,
+      avatar_url: "https://avatars.githubusercontent.com/u/99999",
+      html_url: "https://github.com/claude-bot",
+    },
+    repository: {
+      name: "test-repo",
+      full_name: "test-owner/test-repo",
+      private: false,
+      owner: {
+        login: "test-owner",
+      },
+    },
+  } as PullRequestReviewRequestedEvent,
+  entityNumber: 789,
+  isPR: true,
+  inputs: { ...defaultInputs, reviewerTrigger: "@claude-bot" },
 };

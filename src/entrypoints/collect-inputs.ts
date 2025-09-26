@@ -4,6 +4,7 @@ export function collectActionInputsPresence(): void {
   const inputDefaults: Record<string, string> = {
     trigger_phrase: "@claude",
     assignee_trigger: "",
+    reviewer_trigger: "",
     label_trigger: "claude",
     base_branch: "",
     branch_prefix: "claude/",
@@ -25,7 +26,10 @@ export function collectActionInputsPresence(): void {
     github_token: "",
     max_turns: "",
     use_sticky_comment: "false",
+    sticky_comment_app_bot_id: "209825114",
+    sticky_comment_app_bot_name: "claude",
     use_commit_signing: "false",
+    allow_pr_reviews: "false",
   };
 
   const allInputsJson = process.env.ALL_INPUTS;
