@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { prepareMcpConfig } from "../src/mcp/install-mcp-server";
 import * as core from "@actions/core";
 import type { ParsedGitHubContext } from "../src/github/context";
+import { defaultStickyCommentInputs } from "./mockContext";
 import { CLAUDE_APP_BOT_ID, CLAUDE_BOT_LOGIN } from "../src/github/constants";
 
 describe("prepareMcpConfig", () => {
@@ -28,15 +29,18 @@ describe("prepareMcpConfig", () => {
       prompt: "",
       triggerPhrase: "@claude",
       assigneeTrigger: "",
+      reviewerTrigger: "",
       labelTrigger: "",
       branchPrefix: "",
       useStickyComment: false,
+      ...defaultStickyCommentInputs,
       useCommitSigning: false,
       botId: String(CLAUDE_APP_BOT_ID),
       botName: CLAUDE_BOT_LOGIN,
       allowedBots: "",
       allowedNonWriteUsers: "",
       trackProgress: false,
+      allowPrReviews: false,
     },
   };
 
