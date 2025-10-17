@@ -5,6 +5,7 @@ export type CommonFields = {
   claudeCommentId: string;
   triggerPhrase: string;
   triggerUsername?: string;
+  botUsername?: string; // Username of the authenticated bot/user
   prompt?: string;
   claudeBranch?: string;
 };

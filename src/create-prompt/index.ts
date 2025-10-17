@@ -187,6 +187,7 @@ export function prepareContext(
   claudeCommentId: string,
   baseBranch?: string,
   claudeBranch?: string,
+  botUsername?: string,
 ): PreparedContext {
   const repository = context.repository.full_name;
   const eventName = context.eventName;
@@ -229,6 +230,7 @@ export function prepareContext(
     claudeCommentId,
     triggerPhrase,
     ...(triggerUsername && { triggerUsername }),
+    ...(botUsername && { botUsername }),
     ...(prompt && { prompt }),
     ...(claudeBranch && { claudeBranch }),
   };
@@ -982,6 +984,7 @@ export async function createPrompt(
       claudeCommentId,
       modeContext.baseBranch,
       modeContext.claudeBranch,
+      modeContext.botUsername,
     );
 
     await mkdir(`${process.env.RUNNER_TEMP || "/tmp"}/claude-prompts`, {

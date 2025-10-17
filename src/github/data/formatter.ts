@@ -48,6 +48,7 @@ export function formatBody(
 export function formatComments(
   comments: GitHubComment[],
   imageUrlMap?: Map<string, string>,
+  botUsername?: string,
 ): string {
   return comments
     .filter((comment) => !comment.isMinimized)
@@ -62,7 +63,11 @@ export function formatComments(
 
       body = sanitizeContent(body);
 
-      return `[${comment.author.login} at ${comment.createdAt}]: ${body}`;
+      // Tag bot's own comments
+      const isBotComment = botUsername && comment.author.login === botUsername;
+      const botTag = isBotComment ? " [YOUR OWN COMMENT]" : "";
+
+      return `[${comment.author.login} at ${comment.createdAt}]${botTag}: ${body}`;
     })
     .join("\n\n");
 }
@@ -70,13 +75,18 @@ export function formatComments(
 export function formatReviewComments(
   reviewData: { nodes: GitHubReview[] } | null,
   imageUrlMap?: Map<string, string>,
+  botUsername?: string,
 ): string {
   if (!reviewData || !reviewData.nodes) {
     return "";
   }
 
   const formattedReviews = reviewData.nodes.map((review) => {
-    let reviewOutput = `[Review by ${review.author.login} at ${review.submittedAt}]: ${review.state}`;
+    // Tag bot's own review
+    const isBotReview = botUsername && review.author.login === botUsername;
+    const botTag = isBotReview ? " [YOUR OWN REVIEW]" : "";
+
+    let reviewOutput = `[Review by ${review.author.login} at ${review.submittedAt}]${botTag}: ${review.state}`;
 
     if (review.body && review.body.trim()) {
       let body = review.body;
@@ -109,7 +119,12 @@ export function formatReviewComments(
 
           body = sanitizeContent(body);
 
-          return `  [Comment on ${comment.path}:${comment.line || "?"}]: ${body}`;
+          // Tag bot's own review comments
+          const isBotComment =
+            botUsername && comment.author.login === botUsername;
+          const commentBotTag = isBotComment ? " [YOUR OWN COMMENT]" : "";
+
+          return `  [Comment on ${comment.path}:${comment.line || "?"}]${commentBotTag}: ${body}`;
         })
         .join("\n");
       if (comments) {
