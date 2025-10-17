@@ -68,6 +68,7 @@ export const prReviewMode: Mode = {
       commentId: data?.commentId,
       baseBranch: data?.baseBranch,
       claudeBranch: data?.claudeBranch,
+      botUsername: data?.botUsername,
     };
   },
 
@@ -100,6 +101,11 @@ export const prReviewMode: Mode = {
 
     // Check if actor is human
     await checkHumanActor(octokit.rest, context);
+
+    // Get the authenticated bot username for comment tagging
+    const authenticatedUser = await octokit.rest.users.getAuthenticated();
+    const botUsername = authenticatedUser.data.login;
+    console.log(`Authenticated as bot user: ${botUsername}`);
 
     // Create initial tracking comment (conditionally)
     // Skip tracking comment when allow_pr_reviews is enabled - use formal reviews instead
@@ -136,6 +142,7 @@ export const prReviewMode: Mode = {
       commentId,
       baseBranch: branchInfo.baseBranch,
       claudeBranch: branchInfo.claudeBranch,
+      botUsername,
     });
 
     await createPrompt(this, modeContext, githubData, context);
@@ -199,6 +206,7 @@ export const prReviewMode: Mode = {
       baseBranch: branchInfo.baseBranch,
       claudeCommentId: commentId?.toString() || "",
       allowedTools: prReviewModeTools,
+      mode: "pr_review",
       context,
     });
 

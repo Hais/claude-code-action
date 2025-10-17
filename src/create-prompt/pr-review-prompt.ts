@@ -141,6 +141,7 @@ async function formatGitHubDataThreadAware(
   const formattedComments = formatDeduplicatedComments(
     deduplicatedComments,
     imageUrlMap,
+    context.botUsername,
   );
   const formattedReviewComments = ""; // Now integrated into formattedComments
 
@@ -815,6 +816,7 @@ async function planThreadActions(
 function formatDeduplicatedComments(
   comments: DeduplicatedComment[],
   imageUrlMap?: Map<string, string>,
+  botUsername?: string,
 ): string {
   if (comments.length === 0) {
     return "No comments";
@@ -841,7 +843,11 @@ function formatDeduplicatedComments(
         ? "Review Comment"
         : "General Comment";
 
-      return `[${type} by ${comment.author} at ${comment.createdAt}${location}]: ${body}`;
+      // Tag bot's own comments
+      const isBotComment = botUsername && comment.author === botUsername;
+      const botTag = isBotComment ? " [YOUR OWN COMMENT]" : "";
+
+      return `[${type} by ${comment.author} at ${comment.createdAt}${location}]${botTag}: ${body}`;
     })
     .join("\n\n");
 }
@@ -1226,10 +1232,19 @@ Use COMMENT for general feedback, REQUEST_CHANGES to request changes, or APPROVE
 /**
  * Builds review process instructions (simplified for review mode)
  */
-function buildReviewProcessInstructions(customPrompt?: string): string {
+function buildReviewProcessInstructions(
+  customPrompt?: string,
+  botUsername?: string,
+): string {
   return `Your task is to conduct a thorough pull request review. Here's how to approach it:
 
 ## Review Process:
+
+**IMPORTANT - Bot Comment Identification:**
+- Your bot username is provided in the <bot_username> tag above
+- Comments created by your bot username (${botUsername ?? "Unknown"}) are YOUR OWN previous comments
+- DO NOT respond to your own comments unless explicitly updating or continuing your own review
+- Focus on human-authored comments and code changes for your review
 
 1. **Direct Review Flow**:
    - Begin analysis immediately without tracking comment setup
@@ -1334,6 +1349,7 @@ Remember: Your goal is to help improve code quality while being helpful and coll
  */
 function buildThreadAwareReviewProcessInstructions(
   customPrompt?: string,
+  botUsername?: string,
   threadActions?: {
     threadsToResolve: Array<{
       threadId: string;
@@ -1401,7 +1417,10 @@ IMPORTANT: Use the enhanced thread management tools with priority-based resoluti
 `
     : "";
 
-  const standardInstructions = buildReviewProcessInstructions(customPrompt);
+  const standardInstructions = buildReviewProcessInstructions(
+    customPrompt,
+    botUsername,
+  );
 
   return `${threadManagementSection}${standardInstructions}
 
@@ -1469,6 +1488,7 @@ export async function generatePrReviewPromptThreadAware(
     // Build review process instructions with thread management
     const reviewProcessInstructions = buildThreadAwareReviewProcessInstructions(
       customPrompt,
+      context.botUsername,
       threadActions,
     );
 
@@ -1497,6 +1517,7 @@ ${reviewRequestContext}${customPromptSection}
 ${eventData.isPR && "prNumber" in eventData ? `<pr_number>${eventData.prNumber}</pr_number>` : ""}
 <claude_comment_id>${context.claudeCommentId}</claude_comment_id>
 <trigger_username>${context.triggerUsername ?? "Unknown"}</trigger_username>
+<bot_username>${context.botUsername ?? "Unknown"}</bot_username>
 
 ${reviewToolsInfo}
 
@@ -1549,8 +1570,10 @@ export function generatePrReviewPrompt(
   const reviewToolsInfo = buildPrReviewToolsInfo();
 
   // Build review process instructions
-  const reviewProcessInstructions =
-    buildReviewProcessInstructions(customPrompt);
+  const reviewProcessInstructions = buildReviewProcessInstructions(
+    customPrompt,
+    context.botUsername,
+  );
 
   // Generate the complete prompt
   const promptContent = `${getSystemPromptPrefix()} specialized in conducting thorough and helpful pull request reviews. You have been requested to review this pull request. Think carefully as you analyze the code changes and provide constructive feedback.
@@ -1581,6 +1604,7 @@ ${reviewRequestContext}${customPromptSection}
 ${eventData.isPR && "prNumber" in eventData ? `<pr_number>${eventData.prNumber}</pr_number>` : ""}
 <claude_comment_id>${context.claudeCommentId}</claude_comment_id>
 <trigger_username>${context.triggerUsername ?? "Unknown"}</trigger_username>
+<bot_username>${context.botUsername ?? "Unknown"}</bot_username>
 
 ${reviewToolsInfo}
 

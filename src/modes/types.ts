@@ -11,12 +11,14 @@ export type ModeContext = {
   commentId?: number;
   baseBranch?: string;
   claudeBranch?: string;
+  botUsername?: string;
 };
 
 export type ModeData = {
   commentId?: number;
   baseBranch?: string;
   claudeBranch?: string;
+  botUsername?: string;
 };
 
 /**
