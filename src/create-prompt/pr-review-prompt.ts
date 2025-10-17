@@ -1116,6 +1116,22 @@ Tool usage example for mcp__github_inline_comment__create_inline_comment with co
   "body": "🔴 **Blocker [Correctness]**: This will throw a TypeError when user is null.\\n\\n\`\`\`suggestion\\nreturn user?.profile?.name || 'Anonymous';\`\`\`"
 }
 
+Tool usage example for multi-line inline comment (commenting on entire code blocks):
+{
+  "path": "src/services/auth.js",
+  "startLine": 45,
+  "line": 68,
+  "body": "🟠 **High [Architecture]**: This authentication function has multiple responsibilities mixed together. Consider splitting into separate functions for:\n- Token validation (lines 45-52)\n- Permission checking (lines 53-60)\n- User data enrichment (lines 61-68)\n\nThis will improve testability and make the logic easier to follow."
+}
+
+Tool usage example for multi-line code suggestion (replacing entire function):
+{
+  "path": "src/utils/validation.js",
+  "startLine": 120,
+  "line": 135,
+  "body": "🔴 **Blocker [Security]**: This password validation is vulnerable to timing attacks and has weak complexity requirements.\\n\\n\`\`\`suggestion\\n// Use secure validation with constant-time comparison\\nfunction validatePassword(password: string, hash: string): boolean {\\n  // Check minimum requirements first\\n  if (password.length < 12) return false;\\n  if (!/[A-Z]/.test(password)) return false;\\n  if (!/[a-z]/.test(password)) return false;\\n  if (!/[0-9]/.test(password)) return false;\\n  if (!/[^A-Za-z0-9]/.test(password)) return false;\\n  \\n  // Use crypto for constant-time comparison\\n  return crypto.timingSafeEqual(\\n    Buffer.from(bcrypt.hashSync(password, hash.slice(0, 29))),\\n    Buffer.from(hash)\\n  );\\n}\`\`\`"
+}
+
 Tool usage example for conversational continuity (follow-up review):
 {
   "path": "src/auth.js",
@@ -1130,10 +1146,13 @@ Tool usage example for mcp__github_review__resolve_review_thread:
 }
 
 IMPORTANT: Use mcp__github_inline_comment__create_inline_comment for:
-- Highlighting actionable feedback on specific lines of code
+- Highlighting actionable feedback on specific lines OR entire code blocks (use startLine + line for ranges)
 - Providing critical information about bugs, security issues, or performance problems
 - Suggesting concrete improvements with code suggestions using \`\`\`suggestion blocks
 - Pointing out best practices violations or potential issues in specific code sections
+- **Single-line comments**: Use only the 'line' parameter for line-specific feedback
+- **Multi-line comments**: Use 'startLine' (first line) + 'line' (last line) to comment on functions, classes, or logical blocks
+- Multi-line code suggestions replace the ENTIRE range from startLine to line - ensure replacement code is complete and syntactically valid
 
 **Comment Budgeting and Prioritization:**
 - Limit inline comments to ≤15 per review to avoid overwhelming developers
@@ -1141,6 +1160,21 @@ IMPORTANT: Use mcp__github_inline_comment__create_inline_comment for:
 - Group related 🟡 Medium and 🟢 Low issues into single per-file comments when possible
 - Use rapid succession: post inline comments quickly, then immediately submit formal review
 - Prioritize evidence-based feedback over theoretical concerns
+
+**Multi-line vs Single-line Comment Best Practices:**
+- **Use multi-line comments when:**
+  - Reviewing an entire function, method, or class definition
+  - Feedback applies to a logical code block (e.g., error handling section, validation logic)
+  - Architectural concerns span multiple lines (e.g., "this whole approach should be refactored")
+  - Code suggestion needs to replace a complete section to maintain syntax validity
+- **Use single-line comments when:**
+  - Feedback is specific to one line (e.g., typo, variable naming, simple syntax issue)
+  - Pointing out a specific bug or issue on a particular line
+  - Multiple independent issues exist in nearby lines (use separate single-line comments)
+- **General guidance:**
+  - Prefer multi-line comments for holistic feedback; they provide better context
+  - Use single-line comments for precise, atomic feedback
+  - When in doubt, use multi-line to show the full scope of your concern
 
 IMPORTANT: Use mcp__github_review__resolve_review_thread for:
 - Resolving previous review comment threads that are no longer applicable
