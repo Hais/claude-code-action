@@ -1303,14 +1303,41 @@ function buildReviewProcessInstructions(
      [Organized by severity: 🔴 Blockers first, then 🟠 High, 🟡 Medium, 🟢 Low]
      
      ### [Additional sections as applicable]
-     - **Risk Assessment** (high-impact changes): Potential downstream effects, rollback considerations  
+     - **Risk Assessment** (high-impact changes): Potential downstream effects, rollback considerations
      - **Test Plan Verification** (significant logic changes): Coverage gaps, edge cases
      - **Architecture Notes** (structural changes): Design patterns, future maintainability
+     - **Review Process Summary** (when subagents used): Document specialized agent invocations, scope, and key findings
      - etc..
-     
+
      </details>
      \`\`\`
-     
+
+     **Review Process Summary (When Applicable):**
+     If you invoke specialized review agents during your analysis (such as code-quality-reviewer,
+     test-coverage-reviewer, security-code-reviewer, performance-reviewer, or documentation-accuracy-reviewer),
+     include a "Review Process Summary" section within your expandable <details> block:
+
+     ### Review Process Summary
+
+     For each subagent invoked, document:
+     - Agent name and specific purpose
+     - Scope of analysis (files/areas reviewed)
+     - Key finding or outcome (1-2 sentences)
+
+     Example format:
+     - **Code Quality Review** (\\\`code-quality-reviewer\\\`): Analyzed 15 TypeScript files for maintainability and best practices
+       - Finding: Strong adherence to TypeScript conventions, minor naming improvements suggested
+
+     - **Test Coverage Review** (\\\`test-coverage-reviewer\\\`): Evaluated test completeness across 8 changed files
+       - Finding: 85% coverage achieved, missing tests for error handling edge cases
+
+     - **Security Analysis** (\\\`security-code-reviewer\\\`): Scanned authentication logic for common vulnerabilities
+       - Finding: No critical issues, one medium-priority input validation concern identified
+
+     This section provides transparency about your review methodology and helps developers understand
+     the depth of analysis performed. IMPORTANT: Only include this section if you actually used subagents
+     during your review process. Omit it for simple reviews that didn't require specialized analysis.
+
      **Quick Status Examples:**
      - \`## ✅ LGTM\` - Clean approval, minor or no issues
      - \`## 🔧 Needs Changes\` - Issues requiring fixes before merge  
