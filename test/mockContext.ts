@@ -34,6 +34,7 @@ const defaultInputs = {
   allowedNonWriteUsers: "",
   trackProgress: false,
   allowPrReviews: false,
+  agentTriggerOnPush: false,
 };
 
 const defaultRepository = {

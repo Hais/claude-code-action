@@ -6,7 +6,11 @@ import { prepareMcpConfig } from "../../mcp/install-mcp-server";
 import { parseAllowedTools } from "./parse-tools";
 import { configureGitAuth } from "../../github/operations/git-config";
 import type { GitHubContext } from "../../github/context";
-import { isEntityContext } from "../../github/context";
+import {
+  isEntityContext,
+  isPullRequestEvent,
+  isPushEvent,
+} from "../../github/context";
 
 /**
  * Extract GitHub context as environment variables for agent mode
@@ -53,8 +57,41 @@ export const agentMode: Mode = {
   description: "Direct automation mode for explicit prompts",
 
   shouldTrigger(context) {
-    // Only trigger when an explicit prompt is provided
-    return !!context.inputs?.prompt;
+    // Agent mode requires a prompt to be provided
+    if (!context.inputs?.prompt) {
+      return false;
+    }
+
+    // Push events ONLY trigger when flag is enabled
+    if (isPushEvent(context)) {
+      return !!context.inputs.agentTriggerOnPush;
+    }
+
+    // PR events: handle based on action
+    if (isEntityContext(context) && isPullRequestEvent(context)) {
+      const supportedActions = [
+        "opened",
+        "synchronize",
+        "ready_for_review",
+        "reopened",
+      ];
+
+      // If there's an eventAction, check if it's supported
+      if (context.eventAction) {
+        // Supported actions trigger ONLY when flag is enabled
+        if (supportedActions.includes(context.eventAction)) {
+          return !!context.inputs.agentTriggerOnPush;
+        }
+        // Unsupported PR actions don't trigger at all
+        return false;
+      }
+
+      // No eventAction = manual mode (e.g., workflow_dispatch)
+      return true;
+    }
+
+    // All other events trigger when prompt is provided (manual mode)
+    return true;
   },
 
   prepareContext(context) {
