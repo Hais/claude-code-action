@@ -27,7 +27,7 @@ async function run() {
 
     // Initialize Sentry for error tracking (optional)
     initSentry({ context, mode });
-    
+
     addBreadcrumb("Action preparation started", "prepare", {
       mode: mode.name,
       event: context.eventName,
@@ -113,14 +113,14 @@ async function run() {
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    
+
     // Capture error for Sentry with context
     captureError(error, {
       operation: "prepare",
       phase: "initialization",
       mode: "unknown", // Mode might not be available if error occurs early
     });
-    
+
     core.setFailed(`Prepare step failed with error: ${errorMessage}`);
     // Also output the clean error message for the action to capture
     core.setOutput("prepare_error", errorMessage);
