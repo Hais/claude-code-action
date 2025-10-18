@@ -101,11 +101,11 @@ inputs:
     required: false
     default: "claude[bot]"
   track_progress:
-    description: "Force tag mode with tracking comments for pull_request and issue events. Only applicable to pull_request (opened, synchronize, ready_for_review, reopened) and issue (opened, edited, labeled, assigned) events."
+    description: "Force tag mode with tracking comments for pull_request and issue events. Only applicable to pull_request events: opened, synchronize, ready_for_review, reopened; and issue events: opened, edited, labeled, assigned."
     required: false
     default: "false"
   agent_trigger_on_push:
-    description: "Enable agent mode to trigger automatically on PR push/synchronized events. Requires 'prompt' input to be set. Only applies to pull_request events with actions: opened, synchronize, ready_for_review, reopened."
+    description: "Enable agent mode to trigger automatically on PR push/synchronized events. Requires 'prompt' input to be set. Only applies to pull_request events with actions: opened, synchronize, ready_for_review, or reopened."
     required: false
     default: "false"
   allow_pr_reviews:
