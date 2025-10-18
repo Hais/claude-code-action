@@ -167,7 +167,7 @@ export async function setupBranch(
     };
   } catch (error) {
     console.error("Error in branch setup:", error);
-    
+
     // Capture branch setup errors
     captureError(error, {
       operation: "branch_setup",
@@ -179,7 +179,7 @@ export async function setupBranch(
       repository: `${owner}/${repo}`,
       useCommitSigning: context.inputs.useCommitSigning,
     });
-    
+
     process.exit(1);
   }
 }

@@ -17,6 +17,10 @@ import {
   withBatchErrorRecovery,
   CircuitBreaker,
 } from "../utils/error-recovery";
+import {
+  dismissPreviousChangeRequests,
+  requestReview,
+} from "../github/operations/reviews";
 
 // Initialize Sentry for error tracking
 if (process.env.SENTRY_DSN) {
@@ -456,6 +460,53 @@ server.tool(
         result.data.id,
         commit_id || pr.data.head.sha,
       );
+
+      // If this is a COMMENT review, automatically dismiss any previous REQUEST_CHANGES reviews
+      // This prevents old blocking reviews from keeping PRs stuck
+      if (event === "COMMENT") {
+        try {
+          console.log(
+            "COMMENT review submitted - checking for previous REQUEST_CHANGES reviews to dismiss",
+          );
+          const dismissalResult = await dismissPreviousChangeRequests(
+            octokits,
+            owner,
+            repo,
+            pull_number,
+          );
+
+          if (dismissalResult.dismissedCount > 0) {
+            console.log(
+              `Successfully dismissed ${dismissalResult.dismissedCount} previous REQUEST_CHANGES review(s)`,
+            );
+          }
+
+          if (dismissalResult.errors.length > 0) {
+            console.warn(
+              `Failed to dismiss ${dismissalResult.errors.length} review(s), but continuing`,
+            );
+          }
+        } catch (error) {
+          // Log but don't fail the main operation - dismissal is a nice-to-have
+          console.warn(
+            "Error dismissing previous REQUEST_CHANGES reviews:",
+            error,
+          );
+
+          Sentry.withScope((scope) => {
+            scope.setTag("operation", "auto_dismiss_change_requests");
+            scope.setContext("repository", {
+              owner,
+              repo,
+              pull_number,
+            });
+            scope.setLevel("warning");
+            Sentry.captureException(
+              error instanceof Error ? error : new Error(String(error)),
+            );
+          });
+        }
+      }
 
       return {
         content: [
@@ -2044,6 +2095,130 @@ server.tool(
           {
             type: "text",
             text: `Error getting review stats: ${errorMessage}`,
+          },
+        ],
+        error: errorMessage,
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "request_review",
+  "Request a review on the current PR from the bot itself to trigger PR review mode. Use this when the user asks for a code review without implementation work.",
+  {
+    // No parameters - uses context from environment variables
+  },
+  async () => {
+    try {
+      const githubToken = process.env.GITHUB_TOKEN;
+
+      if (!githubToken) {
+        throw new Error("GITHUB_TOKEN environment variable is required");
+      }
+
+      const owner = REPO_OWNER;
+      const repo = REPO_NAME;
+      const pull_number = parseInt(PR_NUMBER, 10);
+
+      const octokits = createOctokit(githubToken);
+
+      // Get the authenticated user (bot) to request review from itself
+      const authenticatedUser = await octokits.rest.users.getAuthenticated();
+      const botUsername = authenticatedUser.data.login;
+
+      console.log(
+        `Requesting review from bot user: ${botUsername} on PR #${pull_number}`,
+      );
+
+      // Request review from the bot itself
+      const result = await requestReview(octokits, owner, repo, pull_number, [
+        botUsername,
+      ]);
+
+      if (result.success) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  message: result.message,
+                  reviewer: botUsername,
+                  pull_number,
+                  next_step:
+                    "PR review mode will be triggered by the review_requested event",
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: false,
+                  message: result.message,
+                  error: result.error,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+          error: result.error,
+          isError: true,
+        };
+      }
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      // Capture request_review errors with context
+      Sentry.withScope((scope) => {
+        scope.setTag("operation", "request_review");
+        scope.setContext("repository", {
+          owner: REPO_OWNER,
+          repo: REPO_NAME,
+          pull_number: parseInt(PR_NUMBER, 10),
+        });
+        scope.setLevel("error");
+        Sentry.captureException(
+          error instanceof Error
+            ? error
+            : new Error(sanitizeString(errorMessage)),
+        );
+      });
+
+      // Provide helpful error messages for common issues
+      let helpMessage = "";
+      if (
+        errorMessage.includes(
+          "Review cannot be requested from pull request author",
+        )
+      ) {
+        helpMessage =
+          "\n\nThis error occurs when trying to request a review from the PR author (yourself). This is expected when the bot created the PR. The review request feature is designed for PRs created by other users.";
+      } else if (errorMessage.includes("Not Found")) {
+        helpMessage =
+          "\n\nThis usually means the PR doesn't exist or you don't have access to it.";
+      } else if (errorMessage.includes("Unprocessable Entity")) {
+        helpMessage =
+          "\n\nThis usually means the PR is closed or merged, or the reviewer is already assigned.";
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error requesting review: ${errorMessage}${helpMessage}`,
           },
         ],
         error: errorMessage,

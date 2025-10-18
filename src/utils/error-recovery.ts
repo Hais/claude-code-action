@@ -178,7 +178,9 @@ export async function withErrorRecovery<T>(
       case "retry":
         try {
           console.log(`Retrying ${operationName} with recovery strategy...`);
-          addBreadcrumb(`Retrying ${operationName}`, "retry", { attempts: config.retryOptions?.maxAttempts });
+          addBreadcrumb(`Retrying ${operationName}`, "retry", {
+            attempts: config.retryOptions?.maxAttempts,
+          });
           return await retryWithBackoff(operation, config.retryOptions);
         } catch (retryError) {
           // Capture error after retry failure for critical operations
@@ -342,7 +344,7 @@ export class CircuitBreaker {
       console.warn(
         `Circuit breaker is now OPEN after ${this.failures} failures`,
       );
-      
+
       // Capture circuit breaker trip as it indicates systemic issues
       captureError(new Error("Circuit breaker tripped"), {
         operation: "circuit_breaker",
