@@ -104,6 +104,10 @@ inputs:
     description: "Force tag mode with tracking comments for pull_request and issue events. Only applicable to pull_request (opened, synchronize, ready_for_review, reopened) and issue (opened, edited, labeled, assigned) events."
     required: false
     default: "false"
+  agent_trigger_on_push:
+    description: "Enable agent mode to trigger automatically on PR push/synchronized events. Requires 'prompt' input to be set. Only applies to pull_request events with actions: opened, synchronize, ready_for_review, reopened."
+    required: false
+    default: "false"
   allow_pr_reviews:
     description: "Enable Claude to submit formal PR reviews (APPROVE/REQUEST_CHANGES/COMMENT). SECURITY WARNING: This allows Claude to approve pull requests. Only enable if you understand the implications."
     required: false
@@ -204,6 +208,7 @@ runs:
         BOT_ID: ${{ inputs.bot_id }}
         BOT_NAME: ${{ inputs.bot_name }}
         TRACK_PROGRESS: ${{ inputs.track_progress }}
+        AGENT_TRIGGER_ON_PUSH: ${{ inputs.agent_trigger_on_push }}
         ADDITIONAL_PERMISSIONS: ${{ inputs.additional_permissions }}
         CLAUDE_ARGS: ${{ inputs.claude_args }}
         ALLOW_PR_REVIEWS: ${{ inputs.allow_pr_reviews }}

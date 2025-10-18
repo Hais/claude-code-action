@@ -7,6 +7,7 @@ import {
   isIssuesEvent,
   isPullRequestReviewEvent,
   isPullRequestReviewRequestedEvent,
+  isPushEvent,
 } from "../github/context";
 import { checkContainsTrigger } from "../github/validation/trigger";
 
@@ -93,6 +94,17 @@ export function detectMode(context: GitHubContext): AutoDetectedMode {
       if (context.inputs.prompt) {
         return "agent";
       }
+      // If agent_trigger_on_push is enabled with prompt, trigger agent mode on PR sync events
+      if (context.inputs.agentTriggerOnPush && context.inputs.prompt) {
+        return "agent";
+      }
+    }
+  }
+
+  // Push events - route to agent mode when flag is enabled with prompt
+  if (isPushEvent(context)) {
+    if (context.inputs.agentTriggerOnPush && context.inputs.prompt) {
+      return "agent";
     }
   }
 

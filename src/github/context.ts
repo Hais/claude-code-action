@@ -8,6 +8,7 @@ import type {
   PullRequestReviewCommentEvent,
   PullRequestReviewRequestedEvent,
   WorkflowRunEvent,
+  PushEvent,
 } from "@octokit/webhooks-types";
 import { CLAUDE_APP_BOT_ID, CLAUDE_BOT_LOGIN } from "./constants";
 // Custom types for GitHub Actions events that aren't webhooks
@@ -66,6 +67,7 @@ const AUTOMATION_EVENT_NAMES = [
   "repository_dispatch",
   "schedule",
   "workflow_run",
+  "push",
 ] as const;
 
 // Derive types from constants for better maintainability
@@ -100,6 +102,7 @@ type BaseContext = {
     stickyCommentAppBotName: string;
     allowPrReviews: boolean;
     trackProgress: boolean;
+    agentTriggerOnPush: boolean;
   };
 };
 
@@ -116,14 +119,15 @@ export type ParsedGitHubContext = BaseContext & {
   isPR: boolean;
 };
 
-// Context for automation events (workflow_dispatch, repository_dispatch, schedule, workflow_run)
+// Context for automation events (workflow_dispatch, repository_dispatch, schedule, workflow_run, push)
 export type AutomationContext = BaseContext & {
   eventName: AutomationEventName;
   payload:
     | WorkflowDispatchEvent
     | RepositoryDispatchEvent
     | ScheduleEvent
-    | WorkflowRunEvent;
+    | WorkflowRunEvent
+    | PushEvent;
 };
 
 // Union type for all contexts
@@ -162,6 +166,7 @@ export function parseGitHubContext(): GitHubContext {
       stickyCommentAppBotName:
         process.env.STICKY_COMMENT_APP_BOT_NAME ?? "claude",
       allowPrReviews: process.env.ALLOW_PR_REVIEWS === "true",
+      agentTriggerOnPush: process.env.AGENT_TRIGGER_ON_PUSH === "true",
     },
   };
 
@@ -245,6 +250,13 @@ export function parseGitHubContext(): GitHubContext {
         payload: context.payload as unknown as WorkflowRunEvent,
       };
     }
+    case "push": {
+      return {
+        ...commonFields,
+        eventName: "push",
+        payload: context.payload as PushEvent,
+      };
+    }
     default:
       throw new Error(`Unsupported event type: ${context.eventName}`);
   }
@@ -310,4 +322,11 @@ export function isAutomationContext(
   return AUTOMATION_EVENT_NAMES.includes(
     context.eventName as AutomationEventName,
   );
+}
+
+// Type guard to check if context is a push event
+export function isPushEvent(
+  context: GitHubContext,
+): context is AutomationContext & { payload: PushEvent } {
+  return context.eventName === "push";
 }

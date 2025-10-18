@@ -122,6 +122,117 @@ describe("Agent Mode", () => {
     });
   });
 
+  test("agent mode triggers on PR push/synchronize events when agent_trigger_on_push is enabled", () => {
+    const supportedActions = [
+      "opened",
+      "synchronize",
+      "ready_for_review",
+      "reopened",
+    ] as const;
+
+    // Test that agent mode triggers for supported PR actions when flag is enabled WITH prompt
+    supportedActions.forEach((action) => {
+      const contextWithFlag = createMockContext({
+        eventName: "pull_request",
+        eventAction: action,
+        inputs: { agentTriggerOnPush: true, prompt: "Run tests" },
+      });
+      expect(agentMode.shouldTrigger(contextWithFlag)).toBe(true);
+    });
+
+    // Test that agent mode does NOT trigger when flag is enabled but NO prompt
+    supportedActions.forEach((action) => {
+      const contextWithoutPrompt = createMockContext({
+        eventName: "pull_request",
+        eventAction: action,
+        inputs: { agentTriggerOnPush: true, prompt: "" },
+      });
+      expect(agentMode.shouldTrigger(contextWithoutPrompt)).toBe(false);
+    });
+
+    // Test that agent mode does NOT trigger when flag is disabled (default behavior)
+    supportedActions.forEach((action) => {
+      const contextWithoutFlag = createMockContext({
+        eventName: "pull_request",
+        eventAction: action,
+        inputs: { agentTriggerOnPush: false, prompt: "" },
+      });
+      expect(agentMode.shouldTrigger(contextWithoutFlag)).toBe(false);
+    });
+
+    // Test that agent mode does NOT trigger for unsupported PR actions even with flag enabled
+    const unsupportedActions = [
+      "closed",
+      "labeled",
+      "assigned",
+      "review_requested",
+    ] as const;
+
+    unsupportedActions.forEach((action) => {
+      const contextWithFlag = createMockContext({
+        eventName: "pull_request",
+        eventAction: action,
+        inputs: { agentTriggerOnPush: true, prompt: "Run tests" },
+      });
+      expect(agentMode.shouldTrigger(contextWithFlag)).toBe(false);
+    });
+
+    // Test that agent mode STILL triggers for non-PR/non-push events with prompt (manual mode)
+    // The flag enables automatic triggering on push/PR sync, but doesn't disable manual mode
+    const otherEvents = [
+      "issues",
+      "issue_comment",
+      "pull_request_review",
+    ] as const;
+
+    otherEvents.forEach((eventName) => {
+      const contextWithFlag = createMockContext({
+        eventName,
+        inputs: { agentTriggerOnPush: true, prompt: "Run tests" },
+      });
+      // Manual mode should still work even when flag is enabled
+      expect(agentMode.shouldTrigger(contextWithFlag)).toBe(true);
+    });
+  });
+
+  test("agent mode triggers on push events when agent_trigger_on_push is enabled", () => {
+    // Test that agent mode triggers on push event when flag is enabled WITH prompt
+    const contextWithFlag = createMockAutomationContext({
+      eventName: "push",
+      inputs: { agentTriggerOnPush: true, prompt: "Run CI checks" },
+    });
+    expect(agentMode.shouldTrigger(contextWithFlag)).toBe(true);
+
+    // Test that agent mode does NOT trigger on push when flag is enabled but NO prompt
+    const contextNoPrompt = createMockAutomationContext({
+      eventName: "push",
+      inputs: { agentTriggerOnPush: true, prompt: "" },
+    });
+    expect(agentMode.shouldTrigger(contextNoPrompt)).toBe(false);
+
+    // Test that agent mode does NOT trigger on push when flag is disabled even with prompt
+    const contextNoFlag = createMockAutomationContext({
+      eventName: "push",
+      inputs: { agentTriggerOnPush: false, prompt: "Run CI checks" },
+    });
+    expect(agentMode.shouldTrigger(contextNoFlag)).toBe(false);
+  });
+
+  test("agent mode requires prompt to trigger", () => {
+    // Test that agent mode does NOT trigger without a prompt, regardless of flag
+    const contextNoPrompt = createMockAutomationContext({
+      eventName: "workflow_dispatch",
+      inputs: { agentTriggerOnPush: false, prompt: "" },
+    });
+    expect(agentMode.shouldTrigger(contextNoPrompt)).toBe(false);
+
+    const contextNoPromptWithFlag = createMockAutomationContext({
+      eventName: "workflow_dispatch",
+      inputs: { agentTriggerOnPush: true, prompt: "" },
+    });
+    expect(agentMode.shouldTrigger(contextNoPromptWithFlag)).toBe(false);
+  });
+
   test("prepare method passes through claude_args", async () => {
     // Clear any previous calls before this test
     exportVariableSpy.mockClear();
