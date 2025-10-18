@@ -17,13 +17,14 @@ interface SentryInitOptions {
  */
 export function initSentry(options: SentryInitOptions): void {
   const dsn = process.env.SENTRY_DSN;
-  
+
   if (!dsn) {
     // Sentry is optional - silently skip if not configured
     return;
   }
 
-  const environment = process.env.SENTRY_ENVIRONMENT || detectEnvironment(options.context);
+  const environment =
+    process.env.SENTRY_ENVIRONMENT || detectEnvironment(options.context);
   const release = process.env.SENTRY_RELEASE || process.env.GITHUB_SHA;
 
   Sentry.init({
@@ -42,14 +43,15 @@ export function initSentry(options: SentryInitOptions): void {
   });
 
   // Set global tags
-  const repositoryString = typeof options.context.repository === "string" 
-    ? options.context.repository 
-    : `${options.context.repository.owner}/${options.context.repository.repo}`;
-    
+  const repositoryString =
+    typeof options.context.repository === "string"
+      ? options.context.repository
+      : `${options.context.repository.owner}/${options.context.repository.repo}`;
+
   Sentry.setTags({
     "github.event": options.context.eventName,
     "github.repository": repositoryString,
-    "mode": options.mode?.name || "unknown",
+    mode: options.mode?.name || "unknown",
   });
 
   // Set context
@@ -120,7 +122,9 @@ export function captureError(
     scope.setExtras(sanitizedContext);
 
     // Capture the error
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)));
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+    );
   });
 }
 
@@ -188,7 +192,9 @@ export function captureMcpError(
     toolName: context.toolName,
     serverType: context.serverType,
     phase: context.operation,
-    parameters: context.parameters ? sanitizeObject(context.parameters, 2) : undefined,
+    parameters: context.parameters
+      ? sanitizeObject(context.parameters, 2)
+      : undefined,
   });
 }
 
@@ -197,12 +203,19 @@ export function captureMcpError(
  */
 function detectEnvironment(context: GitHubContext): string {
   // Check if this is main/master branch (for push events)
-  if ("ref" in context && context.ref && (context.ref === "refs/heads/main" || context.ref === "refs/heads/master")) {
+  if (
+    "ref" in context &&
+    context.ref &&
+    (context.ref === "refs/heads/main" || context.ref === "refs/heads/master")
+  ) {
     return "production";
   }
 
   // Check if this is a pull request
-  if (context.eventName === "pull_request" || context.eventName === "pull_request_review") {
+  if (
+    context.eventName === "pull_request" ||
+    context.eventName === "pull_request_review"
+  ) {
     return "staging";
   }
 
@@ -213,7 +226,9 @@ function detectEnvironment(context: GitHubContext): string {
 /**
  * Sanitize Sentry events to remove sensitive data
  */
-function sanitizeSentryEvent(event: Sentry.ErrorEvent): Sentry.ErrorEvent | null {
+function sanitizeSentryEvent(
+  event: Sentry.ErrorEvent,
+): Sentry.ErrorEvent | null {
   // Sanitize exception messages
   if (event.exception?.values) {
     for (const exception of event.exception.values) {
@@ -239,7 +254,9 @@ function sanitizeSentryEvent(event: Sentry.ErrorEvent): Sentry.ErrorEvent | null
 /**
  * Sanitize breadcrumbs to remove sensitive data
  */
-function sanitizeBreadcrumb(breadcrumb: Sentry.Breadcrumb): Sentry.Breadcrumb | null {
+function sanitizeBreadcrumb(
+  breadcrumb: Sentry.Breadcrumb,
+): Sentry.Breadcrumb | null {
   if (breadcrumb.message) {
     breadcrumb.message = sanitizeString(breadcrumb.message, 200);
   }

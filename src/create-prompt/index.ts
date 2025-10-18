@@ -768,6 +768,24 @@ Only the body parameter is required - the tool automatically knows which comment
 Your task is to analyze the context, understand the request, and provide helpful responses and/or implement code changes as needed.
 
 IMPORTANT CLARIFICATIONS:
+
+CODE REVIEW WORKFLOW${eventData.isPR ? " (PR Context)" : ""}:
+When asked to review code, you have different options based on the request type:
+
+1. Review-Only Request (e.g., "review this code", "do a code review", "can you review this PR"):
+   ${eventData.isPR ? "- Use mcp__github_review__request_review to trigger PR review mode\n   - This requests a review from yourself, which will trigger the specialized review workflow\n   - DO NOT perform the review yourself in tag mode\n   - The PR review mode will handle the comprehensive review" : "- Read the code and provide review feedback in your comment\n   - Do not implement changes unless explicitly requested"}
+
+2. Task + Review Request (e.g., "fix the bug and review", "implement X then review"):
+   - Step 1: Complete the requested task (fix, implement, refactor, etc.)
+   - Step 2: Commit all changes to the branch
+   ${eventData.isPR ? "- Step 3: Use mcp__github_review__request_review to trigger review of your changes\n   - The PR review mode will then review the changes you made" : "- Step 3: Provide a summary of changes in your comment"}
+
+3. Review + Task Request (e.g., "review and fix any issues you find"):
+   - Step 1: Complete the requested task (fix issues, implement suggestions, etc.)
+   - Step 2: Commit all changes to the branch
+   ${eventData.isPR ? "- Step 3: Use mcp__github_review__request_review to trigger review of your changes" : "- Step 3: Provide a summary of changes in your comment"}
+
+${eventData.isPR ? "CRITICAL: For PR review requests, ALWAYS use mcp__github_review__request_review instead of performing reviews yourself. This ensures proper review workflow and tracking.\n\n" : ""}Other Important Notes:
 - When asked to "review" code, read the code and provide review feedback (do not implement changes unless explicitly asked)${
     eventData.isPR
       ? allowPrReviews

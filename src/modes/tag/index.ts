@@ -144,6 +144,8 @@ export const tagMode: Mode = {
       // Thread reply tools for PR review discussions
       "mcp__github_review__reply_to_thread",
       "mcp__github_inline_comment__create_inline_comment",
+      // Review request tool to trigger PR review mode
+      "mcp__github_review__request_review",
       ...userAllowedMCPTools,
     ];
 
