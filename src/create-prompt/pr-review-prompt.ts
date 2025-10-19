@@ -9,12 +9,15 @@ import {
 } from "../github/data/formatter";
 import { sanitizeContent } from "../github/utils/sanitizer";
 import { getSystemPromptPrefix } from "../utils/assistant-branding";
-import { findLastReviewFromUser, getCommitsSinceReview } from "./index";
 import {
   getCommitsSinceSha,
   getChangedFilesSinceSha,
   shaExists,
 } from "../github/utils/commit-helpers";
+import {
+  findLastReviewFromUser,
+  getCommitsSinceReview,
+} from "./review-helpers";
 
 interface ReviewMetadata {
   lastReviewedSha: string;
