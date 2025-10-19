@@ -56,7 +56,103 @@ if (!REPO_OWNER || !REPO_NAME || !PR_NUMBER) {
   process.exit(1);
 }
 
+// Validate PR_NUMBER is a valid integer to prevent NaN errors in API calls
+const PR_NUMBER_INT = parseInt(PR_NUMBER, 10);
+if (isNaN(PR_NUMBER_INT) || PR_NUMBER_INT <= 0) {
+  const error = new Error(
+    `PR_NUMBER environment variable must be a valid positive integer. Received: "${PR_NUMBER}"`,
+  );
+  console.error("Error:", error.message);
+  Sentry.captureException(error);
+  process.exit(1);
+}
+
+// ============================================================================
+// TypeScript Type Definitions for GitHub GraphQL API responses
+// ============================================================================
+
+/**
+ * Review comment node from GitHub GraphQL API
+ */
+interface ReviewCommentNode {
+  id: string;
+  databaseId: number;
+  body: string;
+  path: string;
+  position: number | null;
+  originalPosition: number | null;
+  line: number | null;
+  originalLine: number | null;
+  diffHunk: string;
+  createdAt: string;
+  author: {
+    login: string;
+  } | null;
+}
+
+/**
+ * Review thread from GitHub GraphQL API
+ */
+interface ReviewThread {
+  id: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string;
+  line: number | null;
+  originalLine: number | null;
+  diffSide: string;
+  startLine: number | null;
+  startDiffSide: string | null;
+  comments: {
+    nodes: ReviewCommentNode[];
+    totalCount: number;
+  };
+}
+
+/**
+ * Review from GitHub GraphQL API
+ */
+interface GitHubReview {
+  id: string;
+  databaseId: number;
+  state: string;
+  body: string;
+  createdAt: string;
+  author: {
+    login: string;
+  } | null;
+}
+
+/**
+ * Pull request review response from GitHub REST API
+ */
+interface PullRequestReview {
+  id: number;
+  node_id: string;
+  user: {
+    login: string;
+  } | null;
+  body: string;
+  state: string;
+  html_url: string;
+  pull_request_url: string;
+  submitted_at: string | null;
+}
+
+/**
+ * File comment for display in get_file_comments tool
+ */
+interface FileComment {
+  threadId: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  comment: ReviewCommentNode;
+}
+
+// ============================================================================
 // GitHub Review MCP Server - Provides PR review submission functionality
+// ============================================================================
+
 const server = new McpServer({
   name: "GitHub Review Server",
   version: "0.0.1",
@@ -98,7 +194,28 @@ async function fetchAllReviewThreads(
     };
   }>
 > {
-  let allThreads: any[] = [];
+  // Use the same type as the return type for type safety
+  type FetchedThread = {
+    id: string;
+    isResolved: boolean;
+    comments: {
+      nodes: Array<{
+        id: string;
+        databaseId: number;
+        body: string;
+        path: string;
+        line: number | null;
+        originalLine: number | null;
+        author: {
+          login: string;
+        };
+        createdAt: string;
+        updatedAt: string;
+      }>;
+    };
+  };
+
+  let allThreads: FetchedThread[] = [];
   let cursor: string | null = null;
   let hasNextPage = true;
 
@@ -372,21 +489,24 @@ server.tool(
 
       const owner = REPO_OWNER;
       const repo = REPO_NAME;
-      const pull_number = parseInt(PR_NUMBER, 10);
+      const pull_number = PR_NUMBER_INT;
 
       const octokits = createOctokit(githubToken);
       const octokit = octokits.rest;
 
-      // Validate that body is provided for events that require it
+      // Sanitize the review body FIRST to remove any potential GitHub tokens
+      const sanitizedBody = sanitizeContent(body);
+
+      // Validate that sanitized body is provided for events that require it
+      // This prevents empty content after sanitization from being sent to GitHub
       if (
         (event === "REQUEST_CHANGES" || event === "COMMENT") &&
-        !body.trim()
+        !sanitizedBody.trim()
       ) {
-        throw new Error(`A review body is required for ${event} events`);
+        throw new Error(
+          `A review body is required for ${event} events. The provided body was empty or contained only content that was removed during sanitization.`,
+        );
       }
-
-      // Sanitize the review body to remove any potential GitHub tokens
-      const sanitizedBody = sanitizeContent(body);
 
       const pr = await octokit.pulls.get({
         owner,
@@ -402,12 +522,33 @@ server.tool(
         pull_number,
       );
 
-      let result: any;
+      // Type for the review result - matches Octokit's response shape
+      type ReviewResult = {
+        data: {
+          id: number;
+          node_id?: string;
+          user?: {
+            login: string;
+          } | null;
+          body?: string;
+          state?: string;
+          html_url?: string;
+          pull_request_url?: string;
+          submitted_at?: string | null;
+        };
+      };
+
+      let result: ReviewResult;
       let handledExistingReview = false;
 
       if (pendingReviews.length > 0) {
         // Handle existing pending review
-        const pendingReview = pendingReviews[0]!; // Take the first (should only be one)
+        const pendingReview = pendingReviews[0];
+        if (!pendingReview) {
+          throw new Error(
+            "Failed to access pending review despite length check - this should not happen",
+          );
+        }
         console.log(
           `Found existing pending review (ID: ${pendingReview.id}), attempting to submit it with merged content`,
         );
@@ -453,13 +594,21 @@ server.tool(
       }
 
       // After successful review submission, automatically add tracking comment metadata
-      await addTrackingCommentMetadata(
+      const metadataResult = await addTrackingCommentMetadata(
         octokits,
         owner,
         repo,
         result.data.id,
         commit_id || pr.data.head.sha,
       );
+
+      // Log if metadata update failed (non-critical, so we don't fail the main operation)
+      if (!metadataResult.success) {
+        console.warn(
+          `Metadata update failed for review ${result.data.id}, but review submission succeeded`,
+        );
+        // Error is already logged to Sentry in addTrackingCommentMetadata
+      }
 
       // If this is a COMMENT review, automatically dismiss any previous REQUEST_CHANGES reviews
       // This prevents old blocking reviews from keeping PRs stuck
@@ -544,11 +693,16 @@ server.tool(
             recoveryOctokits,
             REPO_OWNER,
             REPO_NAME,
-            parseInt(PR_NUMBER, 10),
+            PR_NUMBER_INT,
           );
 
           if (pendingReviews.length > 0) {
-            const pendingReview = pendingReviews[0]!;
+            const pendingReview = pendingReviews[0];
+            if (!pendingReview) {
+              throw new Error(
+                "Failed to access pending review during recovery despite length check",
+              );
+            }
             console.log(
               `Found pending review ${pendingReview.id} during error recovery`,
             );
@@ -557,7 +711,7 @@ server.tool(
               recoveryOctokits,
               REPO_OWNER,
               REPO_NAME,
-              parseInt(PR_NUMBER, 10),
+              PR_NUMBER_INT,
               { id: pendingReview.id, body: pendingReview.body },
               { body: sanitizeContent(body), event, commit_id },
             );
@@ -610,7 +764,7 @@ server.tool(
         scope.setContext("repository", {
           owner: REPO_OWNER,
           repo: REPO_NAME,
-          pull_number: parseInt(PR_NUMBER, 10),
+          pull_number: PR_NUMBER_INT,
         });
         scope.setContext(
           "review_details",
@@ -664,6 +818,8 @@ server.tool(
 /**
  * Automatically adds tracking comment metadata after successful PR review submission.
  * This ensures consistent metadata embedding without relying on the LLM.
+ *
+ * @returns Object with success status and optional error for better observability
  */
 async function addTrackingCommentMetadata(
   octokits: Octokits,
@@ -671,12 +827,12 @@ async function addTrackingCommentMetadata(
   repo: string,
   reviewId: number,
   commitSha: string,
-): Promise<void> {
+): Promise<{ success: boolean; error?: Error }> {
   try {
     // Only update tracking comment if CLAUDE_COMMENT_ID is available
     if (!CLAUDE_COMMENT_ID) {
       console.log("CLAUDE_COMMENT_ID not available - skipping metadata update");
-      return;
+      return { success: false, error: new Error("CLAUDE_COMMENT_ID not set") };
     }
 
     const commentId = parseInt(CLAUDE_COMMENT_ID, 10);
@@ -684,7 +840,10 @@ async function addTrackingCommentMetadata(
       console.warn(
         "Invalid CLAUDE_COMMENT_ID format - skipping metadata update",
       );
-      return;
+      return {
+        success: false,
+        error: new Error("Invalid CLAUDE_COMMENT_ID format"),
+      };
     }
 
     // Get the current tracking comment content
@@ -728,6 +887,7 @@ async function addTrackingCommentMetadata(
     console.log(
       `Successfully added tracking metadata to comment ${commentId} for review ${reviewId}`,
     );
+    return { success: true };
   } catch (error) {
     // Log but don't fail the review submission if metadata update fails
     console.warn("Failed to add tracking comment metadata:", error);
@@ -748,6 +908,11 @@ async function addTrackingCommentMetadata(
         error instanceof Error ? error : new Error(String(error)),
       );
     });
+
+    return {
+      success: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
   }
 }
 
@@ -899,7 +1064,7 @@ server.tool(
 
       const owner = REPO_OWNER;
       const repo = REPO_NAME;
-      const pull_number = parseInt(PR_NUMBER, 10);
+      const pull_number = PR_NUMBER_INT;
 
       const octokits = createOctokit(githubToken);
 
@@ -917,7 +1082,23 @@ server.tool(
         : threads.filter((thread) => !thread.isResolved);
 
       // Group comments by file if specific files requested
-      let fileComments: Record<string, any[]> = {};
+      // Type for file comment display structure
+      type FileCommentDisplay = {
+        threadId: string;
+        isResolved: boolean;
+        comment: {
+          id: string;
+          databaseId: number;
+          body: string;
+          line: number | null;
+          originalLine: number | null;
+          author: string;
+          createdAt: string;
+          updatedAt: string;
+        };
+      };
+
+      const fileComments: Record<string, FileCommentDisplay[]> = {};
 
       for (const thread of filteredThreads) {
         for (const comment of thread.comments.nodes) {
@@ -972,7 +1153,7 @@ server.tool(
         scope.setContext("repository", {
           owner: REPO_OWNER,
           repo: REPO_NAME,
-          pull_number: parseInt(PR_NUMBER, 10),
+          pull_number: PR_NUMBER_INT,
         });
         // Don't include files parameter in Sentry as it may contain sensitive paths
         scope.setLevel("error");
@@ -1014,24 +1195,9 @@ server.tool(
     try {
       // Validate thread ID format before proceeding
       if (!validateGitHubThreadId(threadId)) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                {
-                  success: false,
-                  error: "Invalid thread ID format",
-                  threadId,
-                  suggestion:
-                    "Thread ID should be a valid GitHub GraphQL ID (base64 encoded string)",
-                },
-                null,
-                2,
-              ),
-            },
-          ],
-        };
+        throw new Error(
+          `Invalid thread ID format: "${threadId}". Thread ID should be a valid GitHub GraphQL ID (base64 encoded string).`,
+        );
       }
 
       const githubToken = process.env.GITHUB_TOKEN;
@@ -1154,7 +1320,7 @@ server.tool(
 
       const owner = REPO_OWNER;
       const repo = REPO_NAME;
-      const pull_number = parseInt(PR_NUMBER, 10);
+      const pull_number = PR_NUMBER_INT;
 
       const octokits = createOctokit(githubToken);
 
@@ -1263,7 +1429,7 @@ server.tool(
         scope.setContext("repository", {
           owner: REPO_OWNER,
           repo: REPO_NAME,
-          pull_number: parseInt(PR_NUMBER, 10),
+          pull_number: PR_NUMBER_INT,
         });
         scope.setContext(
           "thread_details",
@@ -1314,24 +1480,9 @@ server.tool(
     try {
       // Validate thread ID format before proceeding
       if (!validateGitHubThreadId(threadId)) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                {
-                  success: false,
-                  error: "Invalid thread ID format",
-                  threadId,
-                  suggestion:
-                    "Thread ID should be a valid GitHub GraphQL ID (base64 encoded string)",
-                },
-                null,
-                2,
-              ),
-            },
-          ],
-        };
+        throw new Error(
+          `Invalid thread ID format: "${threadId}". Thread ID should be a valid GitHub GraphQL ID (base64 encoded string).`,
+        );
       }
 
       const githubToken = process.env.GITHUB_TOKEN;
@@ -1342,6 +1493,152 @@ server.tool(
 
       const octokit = createOctokit(githubToken);
 
+      // Pre-flight check: Query the thread status to see if it's already resolved
+      // This prevents unnecessary API calls and provides better error messages
+      const threadStatus = await withErrorRecovery(
+        () =>
+          octokit.graphql<{
+            node: {
+              id: string;
+              isResolved: boolean;
+            } | null;
+          }>(
+            `
+          query($threadId: ID!) {
+            node(id: $threadId) {
+              ... on PullRequestReviewThread {
+                id
+                isResolved
+              }
+            }
+          }
+        `,
+            {
+              threadId,
+            },
+          ),
+        `check thread status ${threadId}`,
+        true, // Critical operation - should retry
+      );
+
+      // If thread status query failed, threadStatus will be null
+      if (!threadStatus) {
+        throw new Error(
+          "Failed to query thread status - thread may not exist or you may not have access",
+        );
+      }
+
+      // If node is null, thread doesn't exist
+      if (!threadStatus.node) {
+        throw new Error(
+          "Thread not found - the thread ID may be invalid or you may not have access to it",
+        );
+      }
+
+      // If thread is already resolved, return success immediately
+      if (threadStatus.node.isResolved) {
+        console.log(
+          `Thread ${threadId} is already resolved - skipping resolution`,
+        );
+
+        // If a comment was provided, still add it
+        if (body && body.trim()) {
+          const sanitizedBody = sanitizeContent(body);
+          try {
+            await octokit.graphql(
+              `
+              mutation($threadId: ID!, $body: String!) {
+                addPullRequestReviewThreadReply(input: {
+                  pullRequestReviewThreadId: $threadId
+                  body: $body
+                }) {
+                  comment {
+                    id
+                  }
+                }
+              }
+            `,
+              {
+                threadId,
+                body: sanitizedBody,
+              },
+            );
+
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(
+                    {
+                      success: true,
+                      thread_id: threadId,
+                      is_resolved: true,
+                      already_resolved: true,
+                      comment_added: true,
+                      message:
+                        "Thread was already resolved - comment added successfully",
+                    },
+                    null,
+                    2,
+                  ),
+                },
+              ],
+            };
+          } catch (replyError) {
+            console.warn(
+              "Thread already resolved but failed to add comment:",
+              replyError,
+            );
+            // Return success anyway since thread is resolved
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(
+                    {
+                      success: true,
+                      thread_id: threadId,
+                      is_resolved: true,
+                      already_resolved: true,
+                      comment_added: false,
+                      message:
+                        "Thread was already resolved (comment addition failed but thread is resolved)",
+                      comment_error:
+                        replyError instanceof Error
+                          ? replyError.message
+                          : String(replyError),
+                    },
+                    null,
+                    2,
+                  ),
+                },
+              ],
+            };
+          }
+        }
+
+        // Thread already resolved and no comment to add
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  thread_id: threadId,
+                  is_resolved: true,
+                  already_resolved: true,
+                  message: "Thread was already resolved - no action needed",
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+
+      // Thread is not resolved - proceed with resolution
       // If a comment is provided, add it to the thread first
       if (body && body.trim()) {
         const sanitizedBody = sanitizeContent(body);
@@ -1410,6 +1707,7 @@ server.tool(
                 success: true,
                 thread_id: threadId,
                 is_resolved: result.resolveReviewThread.thread.isResolved,
+                already_resolved: false,
                 message: `Review thread resolved successfully${body ? " with comment" : ""}`,
               },
               null,
@@ -1428,7 +1726,7 @@ server.tool(
         scope.setContext("repository", {
           owner: REPO_OWNER,
           repo: REPO_NAME,
-          pull_number: parseInt(PR_NUMBER, 10),
+          pull_number: PR_NUMBER_INT,
         });
         scope.setContext(
           "thread_details",
@@ -1518,6 +1816,99 @@ server.tool(
       const { results: batchResults, errors } = await withBatchErrorRecovery(
         threadIds,
         async (threadId: string) => {
+          // Pre-flight check: Query the thread status to see if it's already resolved
+          const threadStatus = await withErrorRecovery(
+            () =>
+              octokits.graphql<{
+                node: {
+                  id: string;
+                  isResolved: boolean;
+                } | null;
+              }>(
+                `
+              query($threadId: ID!) {
+                node(id: $threadId) {
+                  ... on PullRequestReviewThread {
+                    id
+                    isResolved
+                  }
+                }
+              }
+            `,
+                {
+                  threadId,
+                },
+              ),
+            `check thread status ${threadId}`,
+            false, // Not critical for batch - continue with other threads on failure
+          );
+
+          // If status query failed or thread doesn't exist, skip this thread
+          if (!threadStatus || !threadStatus.node) {
+            console.warn(
+              `Thread ${threadId} not found or inaccessible - skipping`,
+            );
+            return {
+              threadId,
+              success: false,
+              isResolved: false,
+              alreadyResolved: false,
+              skipped: true,
+            };
+          }
+
+          // If thread is already resolved, handle gracefully
+          if (threadStatus.node.isResolved) {
+            console.log(
+              `Thread ${threadId} is already resolved - skipping resolution`,
+            );
+
+            // If a comment was provided, still add it
+            if (comment && comment.trim()) {
+              const sanitizedComment = sanitizeContent(comment);
+              const commentResult = await withErrorRecovery(
+                () =>
+                  octokits.graphql(
+                    `
+                  mutation($threadId: ID!, $body: String!) {
+                    addPullRequestReviewThreadReply(input: {
+                      pullRequestReviewThreadId: $threadId
+                      body: $body
+                    }) {
+                      comment {
+                        id
+                      }
+                    }
+                  }
+                `,
+                    {
+                      threadId,
+                      body: sanitizedComment,
+                    },
+                  ),
+                `addCommentToThread ${threadId}`,
+                false, // Not critical - continue even if comment fails
+              );
+
+              return {
+                threadId,
+                success: true,
+                isResolved: true,
+                alreadyResolved: true,
+                commentAdded: commentResult !== null,
+              };
+            }
+
+            // Thread already resolved, no comment to add
+            return {
+              threadId,
+              success: true,
+              isResolved: true,
+              alreadyResolved: true,
+            };
+          }
+
+          // Thread is not resolved - proceed with resolution
           // Add comment if provided
           if (comment && comment.trim()) {
             const sanitizedComment = sanitizeContent(comment);
@@ -1581,6 +1972,7 @@ server.tool(
             threadId,
             success: result !== null,
             isResolved: result?.resolveReviewThread.thread.isResolved ?? false,
+            alreadyResolved: false,
           };
         },
         "bulk_resolve_threads",
@@ -1678,7 +2070,7 @@ server.tool(
 
       const owner = REPO_OWNER;
       const repo = REPO_NAME;
-      const pull_number = parseInt(PR_NUMBER, 10);
+      const pull_number = PR_NUMBER_INT;
 
       const octokits = createOctokit(githubToken);
 
@@ -1855,7 +2247,7 @@ server.tool(
         scope.setContext("repository", {
           owner: REPO_OWNER,
           repo: REPO_NAME,
-          pull_number: parseInt(PR_NUMBER, 10),
+          pull_number: PR_NUMBER_INT,
         });
         scope.setContext(
           "file_details",
@@ -1907,7 +2299,7 @@ server.tool(
 
       const owner = REPO_OWNER;
       const repo = REPO_NAME;
-      const pull_number = parseInt(PR_NUMBER, 10);
+      const pull_number = PR_NUMBER_INT;
 
       const octokits = createOctokit(githubToken);
 
@@ -2077,7 +2469,7 @@ server.tool(
         scope.setContext("repository", {
           owner: REPO_OWNER,
           repo: REPO_NAME,
-          pull_number: parseInt(PR_NUMBER, 10),
+          pull_number: PR_NUMBER_INT,
         });
         scope.setContext("request_details", {
           include_details: includeDetails,
@@ -2120,7 +2512,7 @@ server.tool(
 
       const owner = REPO_OWNER;
       const repo = REPO_NAME;
-      const pull_number = parseInt(PR_NUMBER, 10);
+      const pull_number = PR_NUMBER_INT;
 
       const octokits = createOctokit(githubToken);
 
@@ -2187,7 +2579,7 @@ server.tool(
         scope.setContext("repository", {
           owner: REPO_OWNER,
           repo: REPO_NAME,
-          pull_number: parseInt(PR_NUMBER, 10),
+          pull_number: PR_NUMBER_INT,
         });
         scope.setLevel("error");
         Sentry.captureException(
