@@ -2,11 +2,11 @@
 
 import { describe, test, expect } from "bun:test";
 
-// Import the helper functions from create-prompt/index.ts
+// Import the helper functions from create-prompt/review-helpers.ts
 import {
   findLastReviewFromUser,
   getCommitsSinceReview,
-} from "../src/create-prompt/index";
+} from "../src/create-prompt/review-helpers";
 
 describe("findLastReviewFromUser", () => {
   test("should return null when reviewData is null", () => {

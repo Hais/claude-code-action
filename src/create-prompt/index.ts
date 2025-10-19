@@ -34,63 +34,6 @@ export {
   generatePrReviewPromptThreadAware,
 } from "./pr-review-prompt";
 
-// Helper function to find the last review from a specific user
-export function findLastReviewFromUser(
-  reviewData: {
-    nodes: Array<{
-      author: { login: string };
-      submittedAt: string;
-      id: string;
-    }>;
-  } | null,
-  username: string,
-): { submittedAt: string; id: string } | null {
-  if (!reviewData?.nodes || reviewData.nodes.length === 0) {
-    return null;
-  }
-
-  // Filter reviews by the specific user and sort by submission time (newest first)
-  const userReviews = reviewData.nodes
-    .filter((review) => review.author.login === username)
-    .sort(
-      (a, b) =>
-        new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime(),
-    );
-
-  const latestReview = userReviews[0];
-  if (!latestReview) {
-    return null;
-  }
-
-  // Return only the subset of fields specified in the function signature
-  return {
-    submittedAt: latestReview.submittedAt,
-    id: latestReview.id,
-  };
-}
-
-// Helper function to get commits since a specific date
-export function getCommitsSinceReview(
-  commits: Array<{
-    commit: {
-      oid: string;
-      message: string;
-      author: { name: string; email: string };
-    };
-  }>,
-  _reviewDate: string,
-): Array<{
-  oid: string;
-  message: string;
-  author: { name: string; email: string };
-}> {
-  // Note: This is a simplified approach as commit timestamps might not perfectly align with review times
-  // Since we don't have commit timestamps in the current data structure,
-  // we'll return all commits and let Claude understand the context
-  // In a future enhancement, we could use git log to get more precise timing
-  return commits.map((c) => c.commit);
-}
-
 // Tag mode defaults - these tools are needed for tag mode to function
 const BASE_ALLOWED_TOOLS = [
   "Edit",
@@ -655,50 +598,6 @@ ${formattedChangedFiles || "No files changed"}
     : ""
 }${imagesInfo}
 
-${
-  eventData.eventName === "pull_request" &&
-  (eventData as any).eventAction === "review_requested" &&
-  eventData.isPR
-    ? (() => {
-        const requestedReviewer = (eventData as any).requestedReviewer;
-        const lastReview = requestedReviewer
-          ? findLastReviewFromUser(reviewData, requestedReviewer)
-          : null;
-        const commitsSinceReview =
-          lastReview && contextData
-            ? getCommitsSinceReview(
-                (contextData as any).commits?.nodes || [],
-                lastReview.submittedAt,
-              )
-            : [];
-
-        return `<review_request_context>
-You have been requested to review this pull request.
-${requestedReviewer ? `The reviewer trigger matched: ${requestedReviewer}` : ""}
-${
-  lastReview
-    ? `Your last review was submitted on ${new Date(lastReview.submittedAt).toISOString()} at ${new Date(lastReview.submittedAt).toLocaleTimeString()}.
-Review ID: ${lastReview.id}
-${
-  commitsSinceReview.length > 0
-    ? `\nCommits since your last review:${commitsSinceReview
-        .slice(0, 10)
-        .map(
-          (commit) =>
-            `\n- ${commit.oid.substring(0, 8)}: ${commit.message.split("\n")[0]}`,
-        )
-        .join(
-          "",
-        )}${commitsSinceReview.length > 10 ? `\n... and ${commitsSinceReview.length - 10} more commits` : ""}`
-    : "\nNo new commits since your last review."
-}`
-    : "This appears to be your first review of this pull request."
-}
-</review_request_context>`;
-      })()
-    : ""
-}
-
 <event_type>${eventType}</event_type>
 <is_pr>${eventData.isPR ? "true" : "false"}</is_pr>
 <trigger_context>${triggerContext}</trigger_context>
@@ -722,77 +621,40 @@ ${sanitizeContent(eventData.commentBody)}
 ${
   allowPrReviews && eventData.isPR
     ? `<review_tool_info>
-IMPORTANT: You have been provided with PR review tools to submit formal GitHub reviews:
-- mcp__github_review__submit_pr_review: Submit a PR review with APPROVE, REQUEST_CHANGES, or COMMENT event
-- mcp__github_review__add_review_comment: Add inline comments on specific lines with actionable feedback and code suggestions (automatically batched into a pending review)
+IMPORTANT: You have been provided with PR review tools:
+- mcp__github_review__submit_pr_review: Submit review with event (APPROVE/REQUEST_CHANGES/COMMENT) and body summary
+- mcp__github_review__add_review_comment: Add inline comments with path, line, and actionable feedback (supports \`\`\`suggestion blocks)
 
-Review workflow:
-1. Simple review: Use mcp__github_review__submit_pr_review directly with overall feedback
-2. Comprehensive review: Use mcp__github_review__add_review_comment for specific line feedback (comments are automatically batched), then mcp__github_review__submit_pr_review to submit the complete review
-
-Tool usage example for mcp__github_review__submit_pr_review (short summary only):
-{
-  "event": "COMMENT|REQUEST_CHANGES|APPROVE",
-  "body": "Brief overall assessment and rationale for your review decision"
-}
-
-Tool usage example for mcp__github_review__add_review_comment (inline comment with actionable feedback):
-{
-  "path": "src/file.js",
-  "line": 42,
-  "body": "Consider using const instead of let here since this value is never reassigned"
-}
-
-Tool usage example with code suggestion:
-{
-  "path": "src/utils.js",
-  "line": 15,
-  "body": "This could be simplified using optional chaining:\\n\\n\`\`\`suggestion\\nreturn user?.profile?.name || 'Anonymous';\\n\`\`\`"
-}
-
-IMPORTANT: Use mcp__github_review__add_review_comment for highlighting actionable feedback, critical issues, and providing code suggestions on specific lines.
-
-Use COMMENT for general feedback, REQUEST_CHANGES to request changes, or APPROVE to approve the PR.
+Workflow: For comprehensive reviews, use mcp__github_review__add_review_comment for specific line feedback, then mcp__github_review__submit_pr_review to submit the complete review.
 </review_tool_info>`
     : `<comment_tool_info>
-IMPORTANT: You have been provided with the mcp__github_comment__update_claude_comment tool to update your comment. This tool automatically handles both issue and PR comments.
-
-Tool usage example for mcp__github_comment__update_claude_comment:
-{
-  "body": "Your comment text here"
-}
-Only the body parameter is required - the tool automatically knows which comment to update.
+IMPORTANT: You have been provided with the mcp__github_comment__update_claude_comment tool to update your comment.
+- Only the body parameter is required - the tool automatically knows which comment to update
+- Handles both issue and PR comments automatically
 </comment_tool_info>`
 }
 
+${
+  eventData.isPR
+    ? `CRITICAL - CODE REVIEW HANDLING:
+When the user requests a code review on this PR (e.g., "review this PR", "do a code review", "review my changes"):
+- Your ONLY action is to call mcp__github_review__request_review
+- DO NOT perform the review yourself in tag mode
+- This triggers the specialized PR review mode with comprehensive analysis
+- The review mode handles all review workflows properly
+
+For requests that combine tasks with reviews (e.g., "fix the bug then review"):
+1. Complete the implementation task first
+2. Commit all changes
+3. Call mcp__github_review__request_review to trigger the review
+
+`
+    : ""
+}
 Your task is to analyze the context, understand the request, and provide helpful responses and/or implement code changes as needed.
 
 IMPORTANT CLARIFICATIONS:
-
-CODE REVIEW WORKFLOW${eventData.isPR ? " (PR Context)" : ""}:
-When asked to review code, you have different options based on the request type:
-
-1. Review-Only Request (e.g., "review this code", "do a code review", "can you review this PR"):
-   ${eventData.isPR ? "- Use mcp__github_review__request_review to trigger PR review mode\n   - This requests a review from yourself, which will trigger the specialized review workflow\n   - DO NOT perform the review yourself in tag mode\n   - The PR review mode will handle the comprehensive review" : "- Read the code and provide review feedback in your comment\n   - Do not implement changes unless explicitly requested"}
-
-2. Task + Review Request (e.g., "fix the bug and review", "implement X then review"):
-   - Step 1: Complete the requested task (fix, implement, refactor, etc.)
-   - Step 2: Commit all changes to the branch
-   ${eventData.isPR ? "- Step 3: Use mcp__github_review__request_review to trigger review of your changes\n   - The PR review mode will then review the changes you made" : "- Step 3: Provide a summary of changes in your comment"}
-
-3. Review + Task Request (e.g., "review and fix any issues you find"):
-   - Step 1: Complete the requested task (fix issues, implement suggestions, etc.)
-   - Step 2: Commit all changes to the branch
-   ${eventData.isPR ? "- Step 3: Use mcp__github_review__request_review to trigger review of your changes" : "- Step 3: Provide a summary of changes in your comment"}
-
-${eventData.isPR ? "CRITICAL: For PR review requests, ALWAYS use mcp__github_review__request_review instead of performing reviews yourself. This ensures proper review workflow and tracking.\n\n" : ""}Other Important Notes:
-- When asked to "review" code, read the code and provide review feedback (do not implement changes unless explicitly asked)${
-    eventData.isPR
-      ? allowPrReviews
-        ? "\n- For PR reviews: Submit your formal review using mcp__github_review__submit_pr_review with the appropriate event type (COMMENT/REQUEST_CHANGES/APPROVE). For detailed feedback, also use mcp__github_review__add_review_comment to add inline comments on specific lines. Focus on providing comprehensive review feedback."
-        : "\n- For PR reviews: Your review will be posted when you update the comment. Focus on providing comprehensive review feedback."
-      : ""
-  }${eventData.isPR && eventData.baseBranch ? `\n- When comparing PR changes, use 'origin/${eventData.baseBranch}' as the base reference (NOT 'main' or 'master')` : ""}
+- When asked to "review" code${eventData.isPR ? ", defer to review mode using mcp__github_review__request_review" : ", read the code and provide review feedback in your comment (do not implement changes unless explicitly asked)"}${eventData.isPR && eventData.baseBranch ? `\n- When comparing PR changes, use 'origin/${eventData.baseBranch}' as the base reference (NOT 'main' or 'master')` : ""}
 - Your console outputs and tool results are NOT visible to the user
 - ALL communication happens through your GitHub comment - that's how users see your feedback, answers, and progress. your normal responses are not seen.
 
@@ -832,27 +694,14 @@ ${eventData.eventName === "issue_comment" || eventData.eventName === "pull_reque
 4. Execute Actions:
    - Continually update your todo list as you discover new requirements or realize tasks can be broken down.
 
-   A. For Answering Questions and Code Reviews:
-      - If asked to "review" code, provide thorough code review feedback:
-        - Look for bugs, security issues, performance problems, and other issues
-        - Suggest improvements for readability and maintainability
-        - Check for best practices and coding standards
-        - Reference specific code sections with file paths and line numbers${
-          eventData.isPR
-            ? allowPrReviews
-              ? `\n      - Use mcp__github_review__add_review_comment for specific line feedback, then MUST call mcp__github_review__submit_pr_review to submit your formal PR review`
-              : `\n      - AFTER reading files and analyzing code, you MUST call mcp__github_comment__update_claude_comment to post your review`
-            : ""
-        }
-      - Formulate a concise, technical, and helpful response based on the context.
-      - Reference specific code with inline formatting or code blocks.
-      - Include relevant file paths and line numbers when applicable.
+   A. For Answering Questions${eventData.isPR ? "" : " and Code Reviews"}:
+      ${eventData.isPR ? "- For code review requests: Follow the CRITICAL - CODE REVIEW HANDLING instructions above\n      " : '- If asked to "review" code, provide thorough code review feedback:\n        - Look for bugs, security issues, performance problems, and other issues\n        - Suggest improvements for readability and maintainability\n        - Check for best practices and coding standards\n        - Reference specific code sections with file paths and line numbers\n      '}- For questions: Formulate a concise, technical, and helpful response based on the context
+      - Reference specific code with inline formatting or code blocks
+      - Include relevant file paths and line numbers when applicable
       - ${
         eventData.isPR
-          ? allowPrReviews
-            ? `IMPORTANT: Submit your review feedback using mcp__github_review__submit_pr_review with the appropriate event type (COMMENT for general feedback, REQUEST_CHANGES to request changes, or APPROVE to approve the PR).`
-            : `IMPORTANT: Submit your review feedback by updating the Claude comment using mcp__github_comment__update_claude_comment. This will be displayed as your PR review.`
-          : `Remember that this feedback must be posted to the GitHub comment using mcp__github_comment__update_claude_comment.`
+          ? `Update your comment using mcp__github_comment__update_claude_comment`
+          : `Remember that this feedback must be posted to the GitHub comment using mcp__github_comment__update_claude_comment`
       }
 
    B. For Straightforward Changes:
