@@ -183,7 +183,7 @@ export async function requestReview(
     );
 
     // Request review using GitHub API
-    await retryWithBackoff(() =>
+    const response = await retryWithBackoff(() =>
       octokits.rest.pulls.requestReviewers({
         owner,
         repo,
@@ -192,9 +192,31 @@ export async function requestReview(
       }),
     );
 
+    // Validate that reviewers were actually added
+    const actuallyAddedReviewers = response.data.requested_reviewers || [];
+    const addedUsernames = actuallyAddedReviewers.map((r) => r.login);
+
+    // Check if any of the requested reviewers were successfully added
+    if (addedUsernames.length === 0) {
+      result.success = false;
+      result.message = `Failed to request review from ${reviewers.join(", ")} - no reviewers were added (this usually means they are the PR author or already requested)`;
+      result.error =
+        "Review cannot be requested from pull request author or reviewer is already requested";
+      console.warn(result.message);
+      return result;
+    }
+
     result.success = true;
-    result.message = `Successfully requested review from ${reviewers.join(", ")}`;
+    result.message = `Successfully requested review from ${addedUsernames.join(", ")}`;
     console.log(result.message);
+
+    // Warn if some reviewers weren't added
+    const notAdded = reviewers.filter((r) => !addedUsernames.includes(r));
+    if (notAdded.length > 0) {
+      console.warn(
+        `Note: Could not request review from ${notAdded.join(", ")} (may be PR author or already requested)`,
+      );
+    }
 
     return result;
   } catch (error) {
