@@ -174,7 +174,7 @@ describe("Agent Mode", () => {
       expect(agentMode.shouldTrigger(contextWithoutPrompt)).toBe(false);
     });
 
-    // Test that agent mode does NOT trigger when flag is disabled (default behavior)
+    // Test that agent mode does NOT trigger when flag is disabled (default behavior) and no prompt
     supportedActions.forEach((action) => {
       const contextWithoutFlag = createMockContext({
         eventName: "pull_request",
@@ -184,7 +184,8 @@ describe("Agent Mode", () => {
       expect(agentMode.shouldTrigger(contextWithoutFlag)).toBe(false);
     });
 
-    // Test that agent mode does NOT trigger for unsupported PR actions even with flag enabled
+    // Test that agent mode DOES trigger for unsupported PR actions when prompt is explicitly provided
+    // This is the key fix: explicit prompts (from reusable workflows) should always work
     const unsupportedActions = [
       "closed",
       "labeled",
@@ -193,12 +194,24 @@ describe("Agent Mode", () => {
     ] as const;
 
     unsupportedActions.forEach((action) => {
-      const contextWithFlag = createMockContext({
+      const contextWithPrompt = createMockContext({
+        eventName: "pull_request",
+        eventAction: action,
+        inputs: { agentTriggerOnPush: false, prompt: "Run command" },
+      });
+      // Should trigger because prompt is provided (manual/reusable workflow mode)
+      expect(agentMode.shouldTrigger(contextWithPrompt)).toBe(true);
+    });
+
+    // Test that unsupported actions DON'T auto-trigger even with flag enabled (but will trigger with prompt)
+    unsupportedActions.forEach((action) => {
+      const contextWithFlagNoAutoTrigger = createMockContext({
         eventName: "pull_request",
         eventAction: action,
         inputs: { agentTriggerOnPush: true, prompt: "Run tests" },
       });
-      expect(agentMode.shouldTrigger(contextWithFlag)).toBe(false);
+      // Should trigger because prompt is provided, not because of auto-trigger
+      expect(agentMode.shouldTrigger(contextWithFlagNoAutoTrigger)).toBe(true);
     });
 
     // Test that agent mode STILL triggers for non-PR/non-push events with prompt (manual mode)
