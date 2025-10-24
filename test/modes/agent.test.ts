@@ -122,6 +122,30 @@ describe("Agent Mode", () => {
     });
   });
 
+  test("agent mode triggers for workflow_call events when prompt is provided", () => {
+    // workflow_call should trigger when prompt provided (like workflow_dispatch)
+    const workflowCallWithPrompt = createMockAutomationContext({
+      eventName: "workflow_call" as any, // Cast to any since workflow_call may not be in type yet
+      inputs: { prompt: "Execute command" },
+    });
+    expect(agentMode.shouldTrigger(workflowCallWithPrompt)).toBe(true);
+
+    // Should NOT trigger without prompt
+    const workflowCallNoPrompt = createMockAutomationContext({
+      eventName: "workflow_call" as any,
+      inputs: { prompt: "" },
+    });
+    expect(agentMode.shouldTrigger(workflowCallNoPrompt)).toBe(false);
+
+    // Should trigger even when there's entity context (PR/issue info)
+    // This is the key fix - workflow_call from reusable workflows should always work
+    const workflowCallWithEntityContext = createMockContext({
+      eventName: "workflow_call" as any,
+      inputs: { prompt: "Execute command from reusable workflow" },
+    });
+    expect(agentMode.shouldTrigger(workflowCallWithEntityContext)).toBe(true);
+  });
+
   test("agent mode triggers on PR push/synchronize events when agent_trigger_on_push is enabled", () => {
     const supportedActions = [
       "opened",
