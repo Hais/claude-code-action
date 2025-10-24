@@ -62,6 +62,12 @@ export const agentMode: Mode = {
       return false;
     }
 
+    // workflow_call and workflow_dispatch should always trigger when prompt provided
+    // This ensures reusable workflows work correctly even with PR/issue context
+    if (context.eventName === 'workflow_call' || context.eventName === 'workflow_dispatch') {
+      return true;
+    }
+
     // Push events ONLY trigger when flag is enabled
     if (isPushEvent(context)) {
       return !!context.inputs.agentTriggerOnPush;
