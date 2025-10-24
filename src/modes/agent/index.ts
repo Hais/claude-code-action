@@ -68,12 +68,12 @@ export const agentMode: Mode = {
       return true;
     }
 
-    // Push events ONLY trigger when flag is enabled
+    // Push events require the agentTriggerOnPush flag
     if (isPushEvent(context)) {
       return !!context.inputs.agentTriggerOnPush;
     }
 
-    // PR events: handle based on action
+    // PR events: handle based on whether agentTriggerOnPush flag is set
     if (isEntityContext(context) && isPullRequestEvent(context)) {
       const supportedActions = [
         "opened",
@@ -82,17 +82,18 @@ export const agentMode: Mode = {
         "reopened",
       ];
 
-      // If there's an eventAction, check if it's supported
-      if (context.eventAction) {
-        // Supported actions trigger ONLY when flag is enabled
+      // If agentTriggerOnPush is enabled, check if action is supported for auto-trigger
+      if (context.inputs.agentTriggerOnPush && context.eventAction) {
+        // Supported actions trigger automatically when flag is enabled
         if (supportedActions.includes(context.eventAction)) {
-          return !!context.inputs.agentTriggerOnPush;
+          return true;
         }
-        // Unsupported PR actions don't trigger at all
-        return false;
+        // Unsupported PR actions don't auto-trigger
+        // But fall through to allow manual trigger (prompt provided)
       }
 
-      // No eventAction = manual mode (e.g., workflow_dispatch)
+      // If we reach here with a prompt: either no eventAction, or it's a manual invocation
+      // from a reusable workflow with explicit prompt - always trigger
       return true;
     }
 
