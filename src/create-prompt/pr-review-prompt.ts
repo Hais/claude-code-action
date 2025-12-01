@@ -1070,19 +1070,23 @@ Use this tiered approach to determine your review action:
 - Dependencies: Patch/minor version bumps with clean security scans
 - Preconditions: Green CI, no security findings, small diff (<50 LOC), clear description
 
-**REQUEST CHANGES for objective, fixable issues:**
-- Missing tests for bug fixes or new functionality
-- Security gaps: Missing auth/authorization, input validation
+**REQUEST CHANGES for objective, fixable issues IN THE PR DIFF:**
+- Missing tests for bug fixes or new functionality introduced in this PR
+- Security gaps: Missing auth/authorization, input validation in changed code
 - API changes lacking semver compliance or migration docs
-- Clear correctness bugs or logical errors
-- Performance issues with significant impact
+- Clear correctness bugs or logical errors in the PR's changes
+- Performance issues with significant impact caused by this PR's changes
+- IMPORTANT: Only use REQUEST_CHANGES for issues the PR author can fix within the scope of this PR
 
-**COMMENT for subjective feedback:**
+**COMMENT for subjective feedback OR pre-existing issues:**
 - Style suggestions and code organization
 - Alternative implementation approaches
 - Non-blocking architectural improvements
 - Questions needing clarification
 - When confidence is moderate but not definitive
+- **Pre-existing issues outside the PR diff scope** (issues in unchanged code that existed before this PR)
+- Blocking-severity issues found in code NOT changed by this PR (use COMMENT to flag for future work)
+- Technical debt or problems inherited from the codebase that this PR doesn't introduce
 
 **DEFER TO HUMAN (avoid auto-decisions) for:**
 - Security-sensitive paths: auth/, crypto/, payment/, user data handling
@@ -1093,12 +1097,17 @@ Use this tiered approach to determine your review action:
 
 **Severity Classification System:**
 Use these severity levels with human-friendly tagging for all review feedback:
-- 🔴 **Blocker**: Correctness, security vulnerabilities, breaking changes, data loss risk → REQUEST_CHANGES
-- 🟠 **High**: Likely defects, performance issues, unsafe patterns → Strong recommendation  
+- 🔴 **Blocker**: Correctness, security vulnerabilities, breaking changes, data loss risk → REQUEST_CHANGES (only if in PR diff)
+- 🟠 **High**: Likely defects, performance issues, unsafe patterns → Strong recommendation
 - 🟡 **Medium**: Maintainability, clarity, architectural improvements → Suggestion
 - 🟢 **Low**: Style, minor optimizations, personal preferences → Nit
 - 💬 **Question**: Clarification needed before judging
 - 👍 **Praise**: Acknowledge good patterns and practices
+
+**CRITICAL - Scope-Based Decision Rule:**
+Before using REQUEST_CHANGES, ask: "Is this issue in code that was changed/added by this PR?"
+- YES → REQUEST_CHANGES is appropriate for blocking issues
+- NO → Use COMMENT instead, even for blocker-severity issues (flag as pre-existing for future work)
 
 Review workflow:
 1. Simple review: Use mcp__github_review__submit_pr_review directly with overall feedback
@@ -1370,8 +1379,9 @@ function buildReviewProcessInstructions(
 - **For security/infrastructure changes**: Always lean toward human oversight rather than auto-approval
 - **For large architectural changes**: Acknowledge the scope and suggest additional review if needed
 - **Confidence threshold**: Only use APPROVE when you're highly confident the changes are safe and correct
+- **Pre-existing issues outside PR scope**: Use COMMENT (not REQUEST_CHANGES) for blocking issues in unchanged code - these existed before this PR and shouldn't block the author's work. Flag them for future attention with a note like "Pre-existing issue (not introduced by this PR)"
 
-Remember: Your goal is to help improve code quality while being helpful and collaborative with the development team. When uncertain about complex decisions, it's better to provide thoughtful feedback via COMMENT and let human reviewers make the final call.`;
+Remember: Your goal is to help improve code quality while being helpful and collaborative with the development team. When uncertain about complex decisions, it's better to provide thoughtful feedback via COMMENT and let human reviewers make the final call. REQUEST_CHANGES should only block merging for issues the PR author can reasonably fix within the scope of their changes.`;
 }
 
 /**

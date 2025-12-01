@@ -49,7 +49,6 @@ export function buildAllowedToolsString(
   customAllowedTools?: string[],
   includeActionsTools: boolean = false,
   useCommitSigning: boolean = false,
-  allowPrReviews: boolean = false,
 ): string {
   // Tag mode needs these tools to function properly
   let baseTools = [...BASE_ALLOWED_TOOLS];
@@ -82,14 +81,6 @@ export function buildAllowedToolsString(
       "mcp__github_ci__get_ci_status",
       "mcp__github_ci__get_workflow_run_details",
       "mcp__github_ci__download_job_log",
-    );
-  }
-
-  // Add PR review MCP tools if enabled
-  if (allowPrReviews) {
-    baseTools.push(
-      "mcp__github_review__submit_pr_review",
-      "mcp__github_review__add_review_comment",
     );
   }
 
@@ -509,16 +500,10 @@ export async function generatePrompt(
   githubData: FetchDataResult,
   useCommitSigning: boolean,
   mode: Mode,
-  allowPrReviews: boolean = false,
 ): Promise<string> {
   // Always use the mode's generatePrompt method
   // Each mode can decide how to handle custom prompts
-  const result = mode.generatePrompt(
-    context,
-    githubData,
-    useCommitSigning,
-    allowPrReviews,
-  );
+  const result = mode.generatePrompt(context, githubData, useCommitSigning);
 
   // Handle both sync and async mode results
   return await Promise.resolve(result);
@@ -532,7 +517,6 @@ export function generateDefaultPrompt(
   context: PreparedContext,
   githubData: FetchDataResult,
   useCommitSigning: boolean = false,
-  allowPrReviews: boolean = false,
 ): string {
   const {
     contextData,
@@ -618,21 +602,11 @@ ${sanitizeContent(eventData.commentBody)}
 </trigger_comment>`
     : ""
 }
-${
-  allowPrReviews && eventData.isPR
-    ? `<review_tool_info>
-IMPORTANT: You have been provided with PR review tools:
-- mcp__github_review__submit_pr_review: Submit review with event (APPROVE/REQUEST_CHANGES/COMMENT) and body summary
-- mcp__github_review__add_review_comment: Add inline comments with path, line, and actionable feedback (supports \`\`\`suggestion blocks)
-
-Workflow: For comprehensive reviews, use mcp__github_review__add_review_comment for specific line feedback, then mcp__github_review__submit_pr_review to submit the complete review.
-</review_tool_info>`
-    : `<comment_tool_info>
+<comment_tool_info>
 IMPORTANT: You have been provided with the mcp__github_comment__update_claude_comment tool to update your comment.
 - Only the body parameter is required - the tool automatically knows which comment to update
 - Handles both issue and PR comments automatically
-</comment_tool_info>`
-}
+</comment_tool_info>
 
 ${
   eventData.isPR
@@ -745,16 +719,10 @@ ${eventData.eventName === "issue_comment" || eventData.eventName === "pull_reque
 
 Important Notes:
 - All communication must happen through GitHub PR comments.
-- Never create new comments. ${
-    allowPrReviews && eventData.isPR
-      ? "For PR reviews, use mcp__github_review__submit_pr_review (and optionally mcp__github_review__add_review_comment for inline feedback). For other updates, use mcp__github_comment__update_claude_comment."
-      : "Only update the existing comment using mcp__github_comment__update_claude_comment."
-  }
+- Never create new comments. Only update the existing comment using mcp__github_comment__update_claude_comment.
 - This includes ALL responses: code reviews, answers to questions, progress updates, and final results.${
     eventData.isPR
-      ? allowPrReviews
-        ? `\n- PR CRITICAL: For formal PR reviews, you MUST use mcp__github_review__submit_pr_review to submit your review. For other communication, use mcp__github_comment__update_claude_comment. Do NOT just respond with a normal response, the user will not see it.`
-        : `\n- PR CRITICAL: After reading files and forming your response, you MUST post it by calling mcp__github_comment__update_claude_comment. Do NOT just respond with a normal response, the user will not see it.`
+      ? `\n- PR CRITICAL: After reading files and forming your response, you MUST post it by calling mcp__github_comment__update_claude_comment. Do NOT just respond with a normal response, the user will not see it.`
       : ""
   }
 - You communicate exclusively by editing your single comment - not through any other means.
@@ -787,25 +755,15 @@ What You CAN Do:
 - Answer questions about code and provide explanations
 - Perform code reviews and provide detailed feedback (without implementing unless asked)
 - Implement code changes (simple to moderate complexity) when explicitly requested
-- Create pull requests for changes to human-authored code${
-    allowPrReviews && eventData.isPR
-      ? `
-- Submit formal GitHub PR reviews (COMMENT, REQUEST_CHANGES, APPROVE)
-- Approve or request changes on pull requests when appropriate`
-      : ""
-  }
+- Create pull requests when explicitly requested
 - Smart branch handling:
   - When triggered on an issue: Always create a new branch
   - When triggered on an open PR: Always push directly to the existing PR branch
   - When triggered on a closed PR: Create a new branch
 
-What You CANNOT Do:${
-    allowPrReviews && eventData.isPR
-      ? ""
-      : `
+What You CANNOT Do:
 - Submit formal GitHub PR reviews
-- Approve pull requests (for security reasons)`
-  }
+- Approve pull requests (for security reasons)
 - Post multiple comments (you only update your initial comment)
 - Execute commands outside the repository context${useCommitSigning ? "\n- Run arbitrary Bash commands (unless explicitly allowed via allowed_tools configuration)" : ""}
 - Perform branch operations (cannot merge branches, rebase, or perform other git operations beyond creating and pushing commits)
@@ -864,7 +822,6 @@ export async function createPrompt(
       githubData,
       context.inputs.useCommitSigning,
       mode,
-      context.inputs.allowPrReviews,
     );
 
     // Log the final prompt to console
@@ -891,7 +848,6 @@ export async function createPrompt(
       modeAllowedTools,
       hasActionsReadPermission,
       context.inputs.useCommitSigning,
-      context.inputs.allowPrReviews,
     );
     const allDisallowedTools = buildDisallowedToolsString(
       modeDisallowedTools,
