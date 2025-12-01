@@ -209,14 +209,12 @@ export const tagMode: Mode = {
     context: PreparedContext,
     githubData: FetchDataResult,
     useCommitSigning: boolean,
-    allowPrReviews: boolean = false,
   ): Promise<string> {
     // Generate standard tag mode prompt with thread reply capabilities
     const defaultPrompt = generateDefaultPrompt(
       context,
       githubData,
       useCommitSigning,
-      allowPrReviews,
     );
 
     // Add thread reply instructions

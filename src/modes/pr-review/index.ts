@@ -240,7 +240,6 @@ export const prReviewMode: Mode = {
     context: PreparedContext,
     githubData: FetchDataResult,
     useCommitSigning: boolean = false,
-    _allowPrReviews: boolean = false,
   ): Promise<string> {
     return await generatePrReviewPromptThreadAware(
       context,
