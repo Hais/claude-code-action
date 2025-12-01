@@ -150,6 +150,82 @@ export function validateGitHubThreadId(
 }
 
 /**
+ * Result of validating a GitHub review thread ID
+ */
+export interface ReviewThreadIdValidationResult {
+  valid: boolean;
+  error?: string;
+}
+
+/**
+ * Validates GitHub PullRequestReviewThread ID format with prefix checking
+ * This provides more specific validation for thread IDs used with MCP tools like reply_to_thread
+ *
+ * Valid prefixes:
+ * - PRRT_ = PullRequestReviewThread (correct for thread operations)
+ * - RT_ = ReviewThread (also valid for some operations)
+ *
+ * Invalid prefixes (common mistakes):
+ * - PRRC_ = PullRequestReviewComment (comment ID, not thread ID)
+ * - IC_ = IssueComment (wrong entity type)
+ */
+export function validateGitHubReviewThreadId(
+  threadId: string | null | undefined,
+): ReviewThreadIdValidationResult {
+  if (!threadId || typeof threadId !== "string") {
+    return {
+      valid: false,
+      error: "Thread ID is required and must be a string",
+    };
+  }
+
+  // Basic format validation first
+  if (!validateGitHubThreadId(threadId)) {
+    return {
+      valid: false,
+      error: `Invalid thread ID format: "${threadId}". Thread ID should be a valid GitHub GraphQL ID.`,
+    };
+  }
+
+  // Check for valid thread prefixes
+  const validThreadPrefixes = ["PRRT_", "RT_"];
+  const hasValidPrefix = validThreadPrefixes.some((prefix) =>
+    threadId.startsWith(prefix),
+  );
+
+  if (hasValidPrefix) {
+    return { valid: true };
+  }
+
+  // Check for common mistakes - using comment IDs instead of thread IDs
+  if (threadId.startsWith("PRRC_")) {
+    return {
+      valid: false,
+      error:
+        `Invalid thread ID: "${threadId}" is a PullRequestReviewComment ID (PRRC_*), not a thread ID. ` +
+        `Use the "threadId" field (PRRT_*) from get_file_comments, not "comment.id".`,
+    };
+  }
+
+  if (threadId.startsWith("IC_")) {
+    return {
+      valid: false,
+      error:
+        `Invalid thread ID: "${threadId}" is an IssueComment ID (IC_*), not a review thread ID. ` +
+        `Review thread IDs start with PRRT_ or RT_.`,
+    };
+  }
+
+  // Unknown prefix - might be valid but we can't verify
+  return {
+    valid: false,
+    error:
+      `Unrecognized thread ID prefix in "${threadId}". ` +
+      `Expected a PullRequestReviewThread ID starting with PRRT_ or RT_.`,
+  };
+}
+
+/**
  * Validates GitHub database ID format
  * Database IDs are typically numeric or numeric strings
  */

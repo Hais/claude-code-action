@@ -50,6 +50,27 @@ export type GitHubReview = {
   };
 };
 
+export type GitHubReviewThreadComment = {
+  id: string;
+  databaseId: number;
+  body: string;
+  author: GitHubAuthor;
+  createdAt: string;
+};
+
+export type GitHubReviewThread = {
+  id: string; // PRRT_* - the actual thread ID for MCP tools
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string;
+  line: number | null;
+  startLine: number | null;
+  diffSide: string;
+  comments: {
+    nodes: GitHubReviewThreadComment[];
+  };
+};
+
 export type GitHubPullRequest = {
   title: string;
   body: string;
@@ -75,6 +96,9 @@ export type GitHubPullRequest = {
   };
   reviews: {
     nodes: GitHubReview[];
+  };
+  reviewThreads?: {
+    nodes: GitHubReviewThread[];
   };
 };
 
