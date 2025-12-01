@@ -457,7 +457,7 @@ function getCommitInstructions(
       - Use: "${coAuthorLine}"`;
     } else {
       return `
-      - You are already on the correct branch (${eventData.claudeBranch || "the PR branch"}). Do not create a new branch.
+      - Use the current branch (${eventData.claudeBranch || "the working branch"}) for your changes, unless your Branch Strategy Decision requires creating a new branch.
       - Push changes directly to the current branch using mcp__github_file_ops__commit_files (works for both new and existing files)
       - Use mcp__github_file_ops__commit_files to commit files atomically in a single commit (supports single or multiple files).
       - When pushing changes and the trigger user is not "Unknown", include a Co-authored-by trailer in the commit message.
@@ -480,7 +480,7 @@ function getCommitInstructions(
     } else {
       const branchName = eventData.claudeBranch || eventData.baseBranch;
       return `
-      - You are already on the correct branch (${eventData.claudeBranch || "the PR branch"}). Do not create a new branch.
+      - Use the current branch (${eventData.claudeBranch || "the working branch"}) for your changes, unless your Branch Strategy Decision requires creating a new branch.
       - Use git commands via the Bash tool to commit and push your changes:
         - Stage files: Bash(git add <files>)
         - Commit with a descriptive message: Bash(git commit -m "<message>")
@@ -665,7 +665,28 @@ ${eventData.eventName === "issue_comment" || eventData.eventName === "pull_reque
    - For implementation requests, assess if they are straightforward or complex.
    - Mark this todo as complete by checking the box.
 
-4. Execute Actions:
+${
+  eventData.isPR
+    ? `4. Change Relevance Assessment (for implementation requests on this PR):
+   Before deciding where to commit changes, evaluate the relationship between the requested work and the current PR:
+
+   - **Scope Alignment**: Does the requested change directly serve the stated goal/purpose of this PR?
+   - **File Overlap**: Compare requested file paths to the list in <changed_files>. Are you primarily modifying files already in this PR?
+   - **Logical Dependency**: Would these changes make sense as a standalone change, or do they depend on this PR's other changes?
+   - **Reviewer Impact**: Would including these changes meaningfully complicate the PR review?
+
+   Classify the requested work as one of:
+   - **DIRECTLY_RELATED**: Same scope, same area, often same files as the PR (e.g., addressing review feedback, fixing bugs in code touched by this PR)
+   - **ADJACENT_BUT_SEPARABLE**: Useful but different concerns, mostly in different files, could be reviewed independently
+   - **INDEPENDENT**: Different feature/bug, mostly different files, no logical dependency on this PR's changes
+
+   **Tie-break rule**: When uncertain between two categories, prefer the more conservative option:
+   - Between DIRECTLY_RELATED and ADJACENT_BUT_SEPARABLE → choose DIRECTLY_RELATED
+   - Between ADJACENT_BUT_SEPARABLE and INDEPENDENT → choose ADJACENT_BUT_SEPARABLE
+
+5. `
+    : "4. "
+}Execute Actions:
    - Continually update your todo list as you discover new requirements or realize tasks can be broken down.
 
    A. For Answering Questions${eventData.isPR ? "" : " and Code Reviews"}:
@@ -698,7 +719,22 @@ ${eventData.eventName === "issue_comment" || eventData.eventName === "pull_reque
           - Reference to the original ${eventData.isPR ? "PR" : "issue"}
           - The signature: "${getSignatureTemplate()}"
         - Just include the markdown link with text "Create a PR" - do not add explanatory text before it like "You can create a PR using this link"`
-          : ""
+          : eventData.isPR
+            ? `- If you decide to create a NEW PR for ADJACENT or INDEPENDENT changes (based on your Change Relevance Assessment):
+        1. First, create and checkout a new branch with a descriptive name (e.g., \`git checkout -b fix/<descriptive-name>\`)
+        2. Make your changes and commit them to the new branch
+        3. Push the new branch: \`git push -u origin <new-branch-name>\`
+        4. Provide a URL to create the PR in this format:
+           [Create a PR](${GITHUB_SERVER_URL}/${context.repository}/compare/<target-branch>...<new-branch-name>?quick_pull=1&title=<url-encoded-title>&body=<url-encoded-body>)
+        - For ADJACENT changes: Use '${eventData.baseBranch || "the PR base branch"}' as <target-branch>
+        - For INDEPENDENT changes: Use the repository's default branch (usually 'main') as <target-branch>
+        - IMPORTANT: Use THREE dots (...) between branch names
+        - IMPORTANT: URL-encode all parameters (spaces as %20, colons as %3A)
+        - The body should include:
+          - A clear description of the changes
+          - Reference to the original PR #${eventData.prNumber}
+          - The signature: "${getSignatureTemplate()}"`
+            : ""
       }
 
    C. For Complex Changes:
@@ -710,7 +746,7 @@ ${eventData.eventName === "issue_comment" || eventData.eventName === "pull_reque
       - Follow the same pushing strategy as for straightforward changes (see section B above).
       - Or explain why it's too complex: mark todo as completed in checklist with explanation.
 
-5. Final Update:
+${eventData.isPR ? "6" : "5"}. Final Update:
    - Always update the GitHub comment to reflect the current todo state.
    - When all todos are completed, remove the spinner and add a brief summary of what was accomplished, and what was not done.
    - Note: If you see previous ${getAssistantReference()} comments with headers like "**${getAssistantReference()} finished @user's task**" followed by "---", do not include this in your comment. The system adds this automatically.
@@ -727,7 +763,7 @@ Important Notes:
   }
 - You communicate exclusively by editing your single comment - not through any other means.
 - Use this spinner HTML when work is in progress: <img src="https://github.com/user-attachments/assets/5ac382c7-e004-429b-8e35-7feb3e8f9c6f" width="14px" height="14px" style="vertical-align: middle; margin-left: 4px;" />
-${eventData.isPR && !eventData.claudeBranch ? `- Always push to the existing branch when triggered on a PR.` : `- IMPORTANT: You are already on the correct branch (${eventData.claudeBranch || "the created branch"}). Never create new branches when triggered on issues or closed/merged PRs.`}
+${eventData.isPR && !eventData.claudeBranch ? `- DEFAULT: Push to the existing PR branch for DIRECTLY_RELATED changes. For ADJACENT or INDEPENDENT changes, create a new branch and PR as described in your Branch Strategy Decision.` : `- IMPORTANT: You are already on the correct branch (${eventData.claudeBranch || "the created branch"}). For issues or closed PRs, always use this branch for your changes.`}
 ${
   useCommitSigning
     ? `- Use mcp__github_file_ops__commit_files for making commits (works for both new and existing files, single or multiple). Use mcp__github_file_ops__delete_files for deleting files (supports deleting single or multiple files atomically), or mcp__github__delete_file for deleting a single file. Edit files locally, and the tool will read the content from the same path on disk.
@@ -756,17 +792,23 @@ What You CAN Do:
 - Perform code reviews and provide detailed feedback (without implementing unless asked)
 - Implement code changes (simple to moderate complexity) when explicitly requested
 - Create pull requests when explicitly requested
-- Smart branch handling:
-  - When triggered on an issue: Always create a new branch
-  - When triggered on an open PR: Always push directly to the existing PR branch
-  - When triggered on a closed PR: Create a new branch
+- Smart branch handling (use your Change Relevance Assessment to decide):
+  - When triggered on an issue: Create a new branch for implementation
+  - When triggered on a closed/merged PR: Create a new branch (never push to closed PR branches)
+  - When triggered on an open PR comment or review:
+    - If changes are DIRECTLY_RELATED (addresses review feedback, fixes bugs in PR files, same scope):
+      → Commit to the existing PR branch
+    - If changes are ADJACENT_BUT_SEPARABLE (useful but different concerns, mostly different files):
+      → Create a NEW PR targeting this PR's base branch (e.g., '${eventData.baseBranch || "the base branch"}')
+    - If changes are INDEPENDENT (different feature/bug, no dependency on this PR):
+      → Create a NEW PR targeting the repository's default branch (usually main)
 
 What You CANNOT Do:
 - Submit formal GitHub PR reviews
 - Approve pull requests (for security reasons)
 - Post multiple comments (you only update your initial comment)
 - Execute commands outside the repository context${useCommitSigning ? "\n- Run arbitrary Bash commands (unless explicitly allowed via allowed_tools configuration)" : ""}
-- Perform branch operations (cannot merge branches, rebase, or perform other git operations beyond creating and pushing commits)
+- Perform destructive git operations (cannot merge branches, rebase, force-push, or modify protected branches). You MAY create new branches and push commits as described above.
 - Modify files in the .github/workflows directory (GitHub App permissions do not allow workflow modifications)
 
 When users ask you to perform actions you cannot do, politely explain the limitation and, when applicable, direct them to the FAQ for more information and workarounds:
@@ -781,6 +823,21 @@ c. List key information from the provided data
 d. Outline the main tasks and potential challenges
 e. Propose a high-level plan of action, including any repo setup steps and linting/testing steps. Remember, you are on a fresh checkout of the branch, so you may need to install dependencies, run build commands, etc.
 f. If you are unable to complete certain steps, such as running a linter or test suite, particularly due to missing permissions, explain this in your comment so that the user can update your \`--allowedTools\`.
+${
+  eventData.isPR
+    ? `g. **Change Relevance Assessment** (required for implementation requests on PRs):
+   - Compare the requested changes to the <changed_files> list and PR description
+   - Classify as: DIRECTLY_RELATED, ADJACENT_BUT_SEPARABLE, or INDEPENDENT
+   - Provide 1-2 sentences of reasoning referencing specific files or scope
+h. **Branch and PR Strategy Decision** (required for implementation requests on PRs):
+   - Based on your relevance assessment, choose one of:
+     • "Commit to existing PR branch" (for DIRECTLY_RELATED changes)
+     • "Create new PR targeting base branch" (for ADJACENT_BUT_SEPARABLE changes)
+     • "Create new PR targeting main" (for INDEPENDENT changes)
+     • "No code changes required" (for questions/reviews only)
+   - State your decision and brief justification`
+    : ""
+}
 `;
 
   return promptContent;
