@@ -81,6 +81,28 @@ export const PR_QUERY = `
             }
           }
         }
+        reviewThreads(first: 100) {
+          nodes {
+            id
+            isResolved
+            isOutdated
+            path
+            line
+            startLine
+            diffSide
+            comments(first: 100) {
+              nodes {
+                id
+                databaseId
+                body
+                author {
+                  login
+                }
+                createdAt
+              }
+            }
+          }
+        }
       }
     }
   }

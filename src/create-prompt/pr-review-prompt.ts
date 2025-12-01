@@ -1,5 +1,6 @@
 import type { PreparedContext } from "./types";
 import type { FetchDataResult } from "../github/data/fetcher";
+import type { GitHubPullRequest } from "../github/types";
 import {
   formatContext,
   formatBody,
@@ -22,6 +23,12 @@ import {
 interface ReviewMetadata {
   lastReviewedSha: string;
   reviewDate: string;
+}
+
+/** Represents a commit summary from GitHub API */
+interface CommitSummary {
+  oid: string;
+  message: string;
 }
 
 interface FormattedGitHubData {
@@ -255,7 +262,7 @@ function buildIncrementalReviewFromMetadata(metadata: ReviewMetadata): string {
 /**
  * Formats commits section for incremental review
  */
-function formatCommitsSection(commits: any[]): string {
+function formatCommitsSection(commits: CommitSummary[]): string {
   if (commits.length === 0) return "";
 
   const maxCommitsToShow = 10;
@@ -294,8 +301,8 @@ function formatFilesSection(files: string[]): string {
  * Builds GitHub review information from API data
  */
 function buildGitHubReviewInfo(
-  lastReview: any,
-  commitsSinceReview: any[],
+  lastReview: { submittedAt: string; id: string } | null,
+  commitsSinceReview: CommitSummary[],
 ): string {
   if (!lastReview) {
     return "This appears to be your first review of this pull request.";
@@ -313,7 +320,7 @@ ${commitsList}`;
 /**
  * Formats commits since review for display
  */
-function formatCommitsSinceReview(commits: any[]): string {
+function formatCommitsSinceReview(commits: CommitSummary[]): string {
   if (commits.length === 0) {
     return "\nNo new commits since your last review.";
   }
@@ -336,35 +343,45 @@ function formatCommitsSinceReview(commits: any[]): string {
 }
 
 /**
- * Phase 1: Analyze existing threads for relevance by reconstructing from GitHub data
+ * Phase 1: Analyze existing threads for relevance using real GitHub reviewThreads data
+ * This uses the actual PullRequestReviewThread IDs (PRRT_*) for MCP tool compatibility
  */
 async function analyzeExistingThreads(
   _context: PreparedContext,
   githubData?: FetchDataResult,
 ): Promise<ThreadAnalysis> {
   try {
-    // If no GitHub data provided, return empty analysis
-    if (!githubData?.reviewData?.nodes) {
-      return {
-        validThreads: [],
-        outdatedThreads: [],
-        threadsToResolve: [],
-        stats: {
-          total: 0,
-          resolved: 0,
-          unresolved: 0,
-          outdated: 0,
-          readyForResolution: 0,
-        },
-        fileThreadMap: new Map(),
-      };
+    // Check if we have reviewThreads data (preferred) or fall back to reviewData
+    const contextData = githubData?.contextData as
+      | GitHubPullRequest
+      | undefined;
+    const reviewThreads = contextData?.reviewThreads?.nodes;
+
+    // If no review threads data, return empty analysis
+    if (!reviewThreads || reviewThreads.length === 0) {
+      // Fall back to empty if no threads at all
+      if (!githubData?.reviewData?.nodes) {
+        return {
+          validThreads: [],
+          outdatedThreads: [],
+          threadsToResolve: [],
+          stats: {
+            total: 0,
+            resolved: 0,
+            unresolved: 0,
+            outdated: 0,
+            readyForResolution: 0,
+          },
+          fileThreadMap: new Map(),
+        };
+      }
     }
 
-    // Build thread mapping using real GitHub GraphQL node IDs
+    // Build thread mapping using REAL GitHub PullRequestReviewThread IDs (PRRT_*)
     const threadMap = new Map<
-      string, // Real GitHub GraphQL node ID (comment.id)
+      string, // Real GitHub GraphQL thread ID (PRRT_*)
       {
-        threadId: string; // Real GitHub GraphQL node ID
+        threadId: string; // Real GitHub GraphQL thread ID (PRRT_*) - this is what MCP tools expect!
         displayId: string; // Human-readable file:line format
         isResolved: boolean;
         file: string;
@@ -384,24 +401,27 @@ async function analyzeExistingThreads(
       }
     >();
 
-    // Process all review comments using real GitHub thread IDs
-    for (const review of githubData.reviewData.nodes) {
-      const reviewState = review.state;
+    // Get PR author for comparison
+    const prAuthor = contextData?.author?.login || null;
+    const changedFiles = githubData?.changedFiles || [];
 
-      for (const comment of review.comments.nodes) {
-        // Use the comment's GraphQL node ID as the thread ID
-        // This is what MCP tools expect!
-        const realThreadId = comment.id;
-        const displayId = `${comment.path}:${comment.line || "null"}`;
+    // Process reviewThreads to get real thread IDs (PRRT_*)
+    if (reviewThreads) {
+      for (const thread of reviewThreads) {
+        // thread.id is the REAL PullRequestReviewThread ID (PRRT_*) - this is what MCP tools need!
+        const realThreadId = thread.id;
+        const displayId = `${thread.path}:${thread.line || "null"}`;
 
         if (!threadMap.has(realThreadId)) {
           threadMap.set(realThreadId, {
-            threadId: realThreadId, // Real GitHub GraphQL node ID
-            displayId: displayId, // Human-readable format for display
-            isResolved: false, // Will be updated based on review states
-            file: comment.path,
-            line: comment.line,
-            isRelevant: true, // Will be analyzed based on current PR state
+            threadId: realThreadId, // PRRT_* - the correct ID for MCP tools!
+            displayId: displayId,
+            isResolved: thread.isResolved, // Use the actual resolution status from GitHub
+            file: thread.path,
+            line: thread.line,
+            isRelevant:
+              !thread.isOutdated &&
+              changedFiles.some((f) => f.path === thread.path),
             lastCommenter: "unknown",
             prAuthorResponded: false,
             readyForResolution: false,
@@ -410,51 +430,55 @@ async function analyzeExistingThreads(
           });
         }
 
-        const thread = threadMap.get(realThreadId)!;
+        const threadData = threadMap.get(realThreadId)!;
 
-        // Add comment to thread
-        thread.comments.push({
-          id: comment.id,
-          databaseId: comment.databaseId.toString(),
-          body: comment.body,
-          author: comment.author.login,
-          createdAt: comment.createdAt,
-        });
-
-        // Track review states for resolution analysis
-        if (!thread.reviewStates.includes(reviewState)) {
-          thread.reviewStates.push(reviewState);
+        // Add comments from this thread
+        for (const comment of thread.comments.nodes) {
+          threadData.comments.push({
+            id: comment.id, // This is PRRC_* (comment ID, not thread ID)
+            databaseId: comment.databaseId.toString(),
+            body: comment.body,
+            author: comment.author.login,
+            createdAt: comment.createdAt,
+          });
         }
       }
     }
 
-    // Analyze threads for resolution and relevance
-    const threads = Array.from(threadMap.values());
-    const changedFiles = githubData.changedFiles || [];
-
-    // Get PR author for comparison
-    const prAuthor = (githubData.contextData as any)?.author?.login || null;
-
-    for (const thread of threads) {
-      // Determine if thread is resolved based on review states
-      thread.isResolved =
-        thread.reviewStates.includes("APPROVED") &&
-        !thread.reviewStates.includes("CHANGES_REQUESTED");
-
-      // Determine relevance - thread is relevant if:
-      // 1. The file is still being changed in this PR, OR
-      // 2. The file exists in the current PR (even if not changed)
-      const fileStillExists =
-        changedFiles.some((f) => f.path === thread.file) ||
-        thread.file.length > 0; // Basic existence check
-
-      thread.isRelevant = fileStillExists;
-
-      // Mark as outdated if file was deleted
-      if (!thread.isRelevant) {
-        thread.isRelevant = false;
+    // Also process reviewData to get review states for each thread
+    // We need to map review comments to their threads
+    if (githubData?.reviewData?.nodes) {
+      // Build a map from comment ID (PRRC_*) to thread ID (PRRT_*)
+      const commentToThreadMap = new Map<string, string>();
+      if (reviewThreads) {
+        for (const thread of reviewThreads) {
+          for (const comment of thread.comments.nodes) {
+            commentToThreadMap.set(comment.id, thread.id);
+          }
+        }
       }
 
+      // Process reviews to get state information
+      for (const review of githubData.reviewData.nodes) {
+        const reviewState = review.state;
+
+        for (const comment of review.comments.nodes) {
+          // Find the thread ID for this comment
+          const threadId = commentToThreadMap.get(comment.id);
+          if (threadId && threadMap.has(threadId)) {
+            const threadData = threadMap.get(threadId)!;
+            if (!threadData.reviewStates.includes(reviewState)) {
+              threadData.reviewStates.push(reviewState);
+            }
+          }
+        }
+      }
+    }
+
+    // Analyze threads for resolution readiness
+    const threads = Array.from(threadMap.values());
+
+    for (const thread of threads) {
       // Enhanced analysis for thread resolution readiness
       if (thread.comments.length > 0) {
         // Sort comments by creation date to find the last commenter
@@ -494,7 +518,7 @@ async function analyzeExistingThreads(
             });
 
         thread.readyForResolution =
-          lastCommentByAuthor || authorResponseContainsResolution;
+          lastCommentByAuthor || !!authorResponseContainsResolution;
       } else {
         thread.lastCommenter = "unknown";
         thread.prAuthorResponded = false;
@@ -624,9 +648,9 @@ async function analyzeExistingThreads(
 }
 
 /**
- * Helper function to build thread ID mapping from review comments
- * This creates a mapping between comment database IDs and their thread IDs
- * based on file path and line number correlation
+ * Helper function to build thread ID mapping from reviewThreads
+ * This creates a mapping between comment database IDs and their real thread IDs (PRRT_*)
+ * using the actual reviewThreads data from GitHub's GraphQL API
  */
 async function buildThreadCommentMapping(
   _context: PreparedContext,
@@ -634,42 +658,29 @@ async function buildThreadCommentMapping(
 ): Promise<Map<string, string>> {
   const threadCommentMap = new Map<string, string>();
 
-  if (!githubData?.reviewData?.nodes) {
-    console.warn("No review data available for thread comment mapping");
+  // Get reviewThreads from contextData (which contains the full PR data)
+  const contextData = githubData?.contextData as GitHubPullRequest | undefined;
+  const reviewThreads = contextData?.reviewThreads?.nodes;
+
+  if (!reviewThreads || reviewThreads.length === 0) {
+    console.warn("No review threads available for thread comment mapping");
     return threadCommentMap;
   }
 
   try {
-    // Build mapping by reconstructing threads from review comments
-    // This mirrors the logic in analyzeExistingThreads to ensure consistency
-    const threadMap = new Map<string, string>(); // threadKey -> threadId
+    // Build mapping from comment IDs to their parent thread IDs
+    // reviewThreads contains the REAL thread IDs (PRRT_*) that MCP tools expect
+    for (const thread of reviewThreads) {
+      const realThreadId = thread.id; // This is PRRT_* - the correct thread ID!
 
-    for (const review of githubData.reviewData.nodes) {
-      for (const comment of review.comments.nodes) {
-        if (!comment.databaseId || !comment.path) {
-          continue; // Skip comments without essential identifiers
-        }
-
-        // Create consistent thread key (same as in analyzeExistingThreads)
-        const threadKey = `${comment.path}:${comment.line || "null"}`;
-
-        // Use the first comment's ID as the thread ID (consistent with GitHub's approach)
-        if (!threadMap.has(threadKey)) {
-          // Generate deterministic thread ID from first comment in thread
-          const threadId = `thread_${comment.databaseId}`;
-          threadMap.set(threadKey, threadId);
-        }
-
-        // Map this comment's database ID to its thread ID
-        const threadId = threadMap.get(threadKey);
-        if (threadId) {
-          threadCommentMap.set(comment.databaseId.toString(), threadId);
-        }
+      for (const comment of thread.comments.nodes) {
+        // Map comment's database ID to the real thread ID
+        threadCommentMap.set(comment.databaseId.toString(), realThreadId);
       }
     }
 
     console.log(
-      `Built thread comment mapping: ${threadCommentMap.size} comments mapped to threads`,
+      `Built thread comment mapping: ${threadCommentMap.size} comments mapped to ${reviewThreads.length} threads`,
     );
     return threadCommentMap;
   } catch (error) {
@@ -1011,7 +1022,7 @@ ${requestedReviewer ? `The reviewer trigger matched: ${requestedReviewer}` : ""}
 
 ${incrementalInfo}
 
-${incrementalInfo ? githubReviewInfo : githubReviewInfo}
+${githubReviewInfo}
 
 IMPORTANT: You are operating in formal review mode with GitHub's native review interface. All feedback should be provided through the formal review tools, not tracking comments.
 </review_request_context>`;

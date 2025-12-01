@@ -7,7 +7,7 @@ import {
   createSanitizedSentryContext,
   sanitizeString,
   sanitizeCommitContent,
-  validateGitHubThreadId,
+  validateGitHubReviewThreadId,
 } from "../utils/sanitization";
 import { createOctokit, type Octokits } from "../github/api/client";
 import { sanitizeContent } from "../github/utils/sanitizer";
@@ -1180,12 +1180,12 @@ server.tool(
 
 server.tool(
   "reply_to_thread",
-  "Add a reply to an existing review thread without resolving it",
+  "Add a reply to an existing review thread without resolving it. IMPORTANT: Use the threadId field (PRRT_*) from get_file_comments, NOT the comment.id field (PRRC_*).",
   {
     threadId: z
       .string()
       .describe(
-        "The GraphQL thread ID to reply to (get this from get_file_comments or review queries)",
+        "The GraphQL thread ID (PRRT_*) to reply to. Get this from the 'threadId' field in get_file_comments response, NOT 'comment.id'.",
       ),
     body: z
       .string()
@@ -1193,11 +1193,10 @@ server.tool(
   },
   async ({ threadId, body }) => {
     try {
-      // Validate thread ID format before proceeding
-      if (!validateGitHubThreadId(threadId)) {
-        throw new Error(
-          `Invalid thread ID format: "${threadId}". Thread ID should be a valid GitHub GraphQL ID (base64 encoded string).`,
-        );
+      // Validate thread ID format with specific review thread validation
+      const validation = validateGitHubReviewThreadId(threadId);
+      if (!validation.valid) {
+        throw new Error(validation.error || "Invalid thread ID");
       }
 
       const githubToken = process.env.GITHUB_TOKEN;
@@ -1462,12 +1461,12 @@ server.tool(
 
 server.tool(
   "resolve_review_thread",
-  "Resolve a pull request review thread (conversation) with an optional comment. Requires Contents: Read/Write permissions.",
+  "Resolve a pull request review thread (conversation) with an optional comment. IMPORTANT: Use the threadId field (PRRT_*), NOT comment.id (PRRC_*). Requires Contents: Read/Write permissions.",
   {
     threadId: z
       .string()
       .describe(
-        "The GraphQL thread ID to resolve (different from REST comment IDs). Get this from review thread queries.",
+        "The GraphQL thread ID (PRRT_*) to resolve. Get this from the 'threadId' field in get_file_comments, NOT 'comment.id'.",
       ),
     body: z
       .string()
@@ -1478,11 +1477,10 @@ server.tool(
   },
   async ({ threadId, body }) => {
     try {
-      // Validate thread ID format before proceeding
-      if (!validateGitHubThreadId(threadId)) {
-        throw new Error(
-          `Invalid thread ID format: "${threadId}". Thread ID should be a valid GitHub GraphQL ID (base64 encoded string).`,
-        );
+      // Validate thread ID format with specific review thread validation
+      const validation = validateGitHubReviewThreadId(threadId);
+      if (!validation.valid) {
+        throw new Error(validation.error || "Invalid thread ID");
       }
 
       const githubToken = process.env.GITHUB_TOKEN;
@@ -1773,11 +1771,13 @@ server.tool(
 
 server.tool(
   "bulk_resolve_threads",
-  "Resolve multiple review threads at once with optional comments",
+  "Resolve multiple review threads at once with optional comments. IMPORTANT: Use threadId fields (PRRT_*), NOT comment.id fields (PRRC_*).",
   {
     threadIds: z
       .array(z.string())
-      .describe("Array of GraphQL thread IDs to resolve"),
+      .describe(
+        "Array of GraphQL thread IDs (PRRT_*) to resolve. Get these from 'threadId' fields, NOT 'comment.id'.",
+      ),
     comment: z
       .string()
       .optional()
@@ -1787,16 +1787,21 @@ server.tool(
   },
   async ({ threadIds, comment }) => {
     try {
-      // Validate thread IDs first
-      const invalidThreadIds = threadIds.filter(
-        (id) => !validateGitHubThreadId(id),
-      );
-      if (invalidThreadIds.length > 0) {
+      // Validate thread IDs with specific review thread validation
+      const validationResults = threadIds.map((id) => ({
+        id,
+        result: validateGitHubReviewThreadId(id),
+      }));
+      const invalidResults = validationResults.filter((v) => !v.result.valid);
+      if (invalidResults.length > 0) {
+        const errorMessages = invalidResults
+          .map((v) => v.result.error || `Invalid ID: ${v.id}`)
+          .join("\n");
         return {
           content: [
             {
               type: "text",
-              text: `Error: Invalid thread ID format(s): ${invalidThreadIds.join(", ")}. Thread IDs must be valid base64-encoded GitHub identifiers.`,
+              text: `Error validating thread IDs:\n${errorMessages}`,
             },
           ],
           error: "Invalid thread ID format",
