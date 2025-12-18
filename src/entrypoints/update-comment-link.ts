@@ -48,19 +48,31 @@ async function run() {
       // GitHub has separate ID namespaces for review comments and issue comments
       // We need to use the correct API based on the event type
       if (isPullRequestReviewCommentEvent(context)) {
-        // For PR review comments, use the pulls API
-        console.log(`Fetching PR review comment ${commentId}`);
-        const { data: prComment } = await octokit.rest.pulls.getReviewComment({
-          owner,
-          repo,
-          comment_id: commentId,
-        });
-        comment = prComment;
-        isPRReviewComment = true;
-        console.log("Successfully fetched as PR review comment");
+        // For PR review comments, try the pulls API first
+        // But wrap in try-catch because the comment might be a fallback issue comment
+        // (created when PR review comment reply failed due to pending review)
+        try {
+          console.log(`Fetching PR review comment ${commentId}`);
+          const { data: prComment } = await octokit.rest.pulls.getReviewComment(
+            {
+              owner,
+              repo,
+              comment_id: commentId,
+            },
+          );
+          comment = prComment;
+          isPRReviewComment = true;
+          console.log("Successfully fetched as PR review comment");
+        } catch (prCommentError) {
+          // If PR review comment fetch fails (e.g., 404 because it's actually an issue comment),
+          // fall through to try issue comment API
+          console.log(
+            `PR review comment fetch failed (${(prCommentError as Error).message}), will try issue comment API`,
+          );
+        }
       }
 
-      // For all other event types, use the issues API
+      // For all other event types, or if PR review comment fetch failed, use the issues API
       if (!comment) {
         console.log(`Fetching issue comment ${commentId}`);
         const { data: issueComment } = await octokit.rest.issues.getComment({
